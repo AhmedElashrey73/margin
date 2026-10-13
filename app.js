@@ -2,7 +2,7 @@ import * as E from './engine.js';
 
 const KEY = 'margin.state';
 const PREV = 'margin.prev';
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 
 let S = null;               // app state
 let bootError = null;       // { kind, raw }
@@ -491,7 +491,7 @@ function sweep(key, amount, toDebt) {
 const reactQueue = [];
 let reactShowing = false;
 function reactionContent(r) {
-  if (r.kind === 'over') return { art: artWallet(), title: 'E5th.', sub: `Over today’s share. Tomorrow’s share: ${money(r.tomorrow)} EGP.`, ms: 2600 };
+  if (r.kind === 'over') return { art: artWallet(), title: 'E5th.', sub: `Over today’s share by ${money(r.over)}. Tomorrow’s share: ${money(r.tomorrow)} EGP.`, ms: 2600 };
   if (r.kind === 'bucket') return { art: artReceipt(), title: 'Yalahweeey', sub: `${r.line.name} is ${money(r.over)} over for this cycle. It comes out of your other flexible money.`, ms: 3000 };
   if (r.kind === 'nospend') return { art: artCoin(), title: r.when === 'yesterday' ? 'Zero spend yesterday.' : 'Zero spend today.', sub: 'Your future self says thokran.', ms: 2800 };
   if (r.kind === 'cycle') return { art: artStamp(), title: 'Bravooo Thara', sub: `Last pay cycle finished under budget${r.left > 0 ? `, with ${money(r.left)} EGP to spare` : ''}.`, ms: 3400 };
@@ -705,7 +705,9 @@ function openAdd(existing = null, preset = {}) {
           const r = E.spendReaction(prev, S, entry, today());
           if (!r) return null;
           if (r.kind === 'bucket') S.meta.fx.buckets[r.key] = 1;
-          S.meta.fx.overDay = today(); // one reaction per day for overspending
+          const prevLevel = S.meta.fx.overDay === today() ? S.meta.fx.overLevel || 0 : 0;
+          S.meta.fx.overDay = today();
+          S.meta.fx.overLevel = Math.max(prevLevel, r.level || 0); // next E5th only at the next 500 EGP level
           return r;
         },
       });

@@ -366,6 +366,9 @@ export function lcName(n) { const w = n.split(' ')[0]; return w.length > 1 && w 
 export function flexSpentOn(state, iso) {
   return state.entries.filter((e) => e.date === iso && isLifestyleEntry(state, e)).reduce((a, e) => a + e.amount, 0);
 }
+// E5th fires once per 500 EGP "level" over today's share: over by 1–499 is level 1, 500–999 level 2, ...
+export const OVER_STEP = 50000;
+export const overLevel = (leftToday) => (leftToday < 0 ? Math.floor(-leftToday / OVER_STEP) + 1 : 0);
 // Is the app counting days yet? (plan started, or the money-until-payday amount is set)
 export function tracking(state, iso) {
   if (!state.plan) return false;
@@ -384,10 +387,12 @@ export function spendReaction(before, after, entry, today) {
   if (live && line.id !== 'other' && line.amount > 0) {
     const was = line.amount - lineSpent(before, line, key);
     const now = line.amount - lineSpent(after, line, key);
-    if (was >= 0 && now < 0 && !fx.buckets[`${key}:${line.id}`]) return { kind: 'bucket', key: `${key}:${line.id}`, line, over: -now };
+    if (was >= 0 && now < 0 && !fx.buckets[`${key}:${line.id}`]) return { kind: 'bucket', key: `${key}:${line.id}`, line, over: -now, level: overLevel(safeToSpend(after, today).leftToday) };
   }
-  const b = safeToSpend(before, today), a = safeToSpend(after, today);
-  if (b.leftToday >= 0 && a.leftToday < 0 && fx.overDay !== today) return { kind: 'over', tomorrow: safeToSpend(after, addDays(today, 1)).daily };
+  const a = safeToSpend(after, today);
+  const level = overLevel(a.leftToday);
+  const shown = fx.overDay === today ? fx.overLevel || 0 : 0;
+  if (level > shown) return { kind: 'over', level, over: -a.leftToday, tomorrow: safeToSpend(after, addDays(today, 1)).daily };
   return null;
 }
 // Debts that went from owing to cleared between two states.
@@ -499,7 +504,7 @@ export function emptyState() {
     plan: null,
     entries: [], bills: {}, debtPays: [], savingsLog: [],
     checkins: {}, merchants: {}, cycleStarts: {}, warmup: null, sweeps: {},
-    meta: { created: Date.now(), lastBackup: null, setupId: null, reactions: true, fx: { overDay: null, lastSeen: null, buckets: {}, nospend: {}, debts: {}, cycles: {} } },
+    meta: { created: Date.now(), lastBackup: null, setupId: null, reactions: true, fx: { overDay: null, overLevel: 0, lastSeen: null, buckets: {}, nospend: {}, debts: {}, cycles: {} } },
   };
 }
 
@@ -602,6 +607,7 @@ export function validateState(s) {
     reactions: m.reactions !== false,
     fx: {
       overDay: isValidISO(fx.overDay) ? fx.overDay : null,
+      overLevel: Number.isInteger(fx.overLevel) && fx.overLevel >= 0 && fx.overLevel < 100000 ? fx.overLevel : (isValidISO(fx.overDay) ? 1 : 0),
       lastSeen: isValidISO(fx.lastSeen) ? fx.lastSeen : null,
       buckets: flags(fx.buckets, (k) => /^\d{4}-\d{2}:[\w-]{1,24}$/.test(k), 400),
       nospend: flags(fx.nospend, isValidISO, 400),
