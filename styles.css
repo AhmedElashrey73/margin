@@ -289,3 +289,19 @@ button.row:active { background: var(--sunk); }
 }
 
 .row .meta.wrap { white-space: normal; overflow: visible; }
+
+.env .left.ok { color: var(--green); }
+h2.sec .r.neg { color: var(--red); }
+.hero .sub .delta.up b { color: var(--green); }
+.hero .sub .delta.down b { color: var(--red); }
+.hero .sub .delta { font-size: 14px; color: var(--ink-2); margin-bottom: 4px; }
+.chip-label { text-align: center; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); font-weight: 500; margin: 2px 0 6px; }
+.buckets.more { margin-top: 0; }
+.buckets.more .bucket { height: 34px; font-size: 13.5px; padding: 0 13px; }
+.swipe { position: relative; overflow: hidden; }
+.swipe .row { background: var(--paper); position: relative; z-index: 1; }
+.swipe-act { position: absolute; right: 0; top: 0; bottom: 1px; width: 92px; background: var(--red); color: #fff; font-weight: 600; font-size: 14.5px; }
+.tickrow { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 12px 0; border-bottom: 1px solid var(--rule); font-size: 15px; }
+.tickrow .box { width: 22px; height: 22px; border-radius: 6px; border: 1.5px solid var(--ink-2); flex-shrink: 0; position: relative; }
+.tickrow.on .box { background: var(--green); border-color: var(--green); }
+.tickrow.on .box::after { content: ""; position: absolute; left: 6.5px; top: 2.5px; width: 5px; height: 10px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }

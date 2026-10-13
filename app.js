@@ -2,7 +2,7 @@ import * as E from './engine.js';
 
 const KEY = 'margin.state';
 const PREV = 'margin.prev';
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 
 let S = null;               // app state
 let bootError = null;       // { kind, raw }
@@ -202,6 +202,12 @@ function hero(sf, t) {
   put(wrap, h('div', { class: 'label', text: over ? 'Over today’s share by' : 'Safe to spend today' }));
   put(wrap, h('div', { class: 'big num' + (over ? ' over' : '') }, h('span', { text: money(Math.abs(sf.leftToday)) }), h('span', { class: 'cur', text: 'EGP' })));
   const lines = [];
+  if (sf.mode === 'cycle' && sf.delta) {
+    const up = sf.delta > 0;
+    lines.push(h('div', { class: 'delta ' + (up ? 'up' : 'down') }, h('b', { class: 'num', text: (up ? '+' : '−') + money(Math.abs(sf.delta)) }),
+      up ? ' more than yesterday — unspent money rolls forward.' : ' less than yesterday — yesterday’s spending is spread over the days left.'));
+  }
+  if (sf.overToday > 0) lines.push(h('div', {}, h('b', { class: 'num', text: money(sf.overToday) }), ' of today’s share went to a bill or essential that ran over.'));
   if (sf.spentToday > 0) lines.push(h('div', {}, 'You’ve spent ', h('b', { class: 'num', text: money(sf.spentToday) }), ' of today’s ', h('b', { class: 'num', text: money(sf.daily) }), '.'));
   if (sf.mode === 'cycle') {
     if (sf.cycleLeft >= 0) lines.push(h('div', {}, h('b', { class: 'num', text: money(sf.cycleLeft) }), ` flexible money left until payday, ${E.shortDate(sf.cycle.nextPayday)}.`));
@@ -300,7 +306,7 @@ function actionCards(t, started) {
     if (due.length) {
       const total = due.reduce((a, b) => a + b.line.amount, 0);
       const rows = due.map((b) => h('div', { class: 'row' },
-        h('div', { class: 'main' }, h('div', { class: 'name', text: b.line.name }), h('div', { class: 'meta num', text: `${money(b.line.amount)} EGP · due ${E.shortDate(b.due)}` })),
+        h('button', { class: 'main', style: { textAlign: 'left' }, onclick: () => payBillAmount(c.key, b.line) }, h('div', { class: 'name', text: b.line.name }), h('div', { class: 'meta num', text: `${money(b.line.amount)} EGP · tap if it was different` })),
         h('button', { class: 'btn line', text: 'Paid', onclick: () => payBill(c.key, b.line) })));
       const box = card('', due.length === 1 ? 'Bill due' : 'Bills due', `${plural(due.length, 'bill', 'bills')} · ${money(total)} EGP`, null,
         due.length > 1 ? [h('button', { class: 'btn ink', text: 'Mark all paid', onclick: () => payBills(c.key, due.map((b) => b.line)) })] : null);
@@ -312,10 +318,10 @@ function actionCards(t, started) {
     if (mv.debtRemaining > 0) {
       const first = E.debtsOrdered(S).find((d) => E.debtBalance(S, d) > 0);
       const partial = mv.paidFromCycle > 0;
-      out.push(card('', partial ? 'Debt payment · rest of it' : 'This cycle’s debt payment', `Pay ${money(mv.debtRemaining)} EGP to ${first ? E.lcName(first.name) : 'your debt'}`,
+      out.push(card('', partial ? 'Toward your debt · the rest' : 'Toward your debt this cycle', `Pay ${money(mv.debtRemaining)} EGP to ${first ? E.lcName(first.name) : 'your debt'}`,
         first && first.note ? first.note : 'Paying debt first saves you interest.',
         [h('button', { class: 'btn ink', text: 'Done', onclick: () => payDebt(mv.debtRemaining, 'cycle') }),
-          h('button', { class: 'btn quiet', text: 'Different amount', onclick: () => amountSheet({ title: 'Debt payment', label: 'How much did you pay?', initial: mv.debtRemaining, confirm: 'Save payment' }, (p) => payDebt(p, 'cycle')) })]));
+          h('button', { class: 'btn quiet', text: 'Different amount', onclick: () => amountSheet({ title: 'Toward your debt', label: 'How much did you pay?', initial: mv.debtRemaining, confirm: 'Save payment' }, (p) => payDebt(p, 'cycle')) })]));
     } else if (mv.saveRemaining > 0) {
       out.push(card('green', 'This cycle’s saving', `Move ${money(mv.saveRemaining)} EGP to savings`, 'Pay yourself first, before the month gets a vote.',
         [h('button', { class: 'btn green', text: 'Done', onclick: () => addSavings(mv.saveRemaining, 'cycle') }),
@@ -349,30 +355,62 @@ function actionCards(t, started) {
 
 function envelopesBlock(t) {
   const c = E.cycleInfo(S, t);
-  const spent = E.spentByLine(S, c.start, t);
-  const lines = E.activeLines(S, c.key).filter((l) => l.kind === 'envelope');
+  const all = E.buckets(S, c.key, t);
   const pace = (c.dayIndex - 0.5) / c.length;
-  const row = (l) => {
-    const sp = spent[l.id] || 0;
-    const left = l.amount - sp;
-    const pct = l.amount > 0 ? Math.min(1, Math.max(0, sp / l.amount)) : (sp > 0 ? 1 : 0);
-    const over = left < 0;
-    const bar = h('div', { class: 'bar' + (over ? ' r' : '') }, h('i'));
-    bar.firstChild.style.width = `${pct * 100}%`;
-    if (l.amount > 0) { const pm = h('span', { class: 'pace' }); pm.style.left = `${pace * 100}%`; bar.append(pm); }
-    return h('button', { class: 'env', onclick: () => { ui.tab = 'log'; ui.logFilter = l.id; render(); window.scrollTo(0, 0); } },
-      h('div', { class: 'top' }, h('span', { class: 'name', text: l.name }),
-        h('span', { class: 'left num' + (over ? ' over' : '') }, over ? `${money(-left)}` : money(left), h('small', { text: over ? 'over' : `left of ${money(l.amount)}` }))),
-      bar);
+  const bar = (pct, over, green, showPace) => {
+    const b = h('div', { class: 'bar' + (over ? ' r' : green ? ' g' : '') }, h('i'));
+    b.firstChild.style.width = `${Math.min(1, Math.max(0, pct)) * 100}%`;
+    if (showPace) { const pm = h('span', { class: 'pace' }); pm.style.left = `${pace * 100}%`; b.append(pm); }
+    return b;
   };
-  const flexible = lines.filter((l) => l.group === 'lifestyle' && (l.amount > 0 || (spent[l.id] || 0) !== 0));
-  const essential = lines.filter((l) => l.group === 'fixed');
-  // spending on lines removed from the plan still shows under Other
-  const known = new Set(lines.map((l) => l.id));
-  const orphan = Object.entries(spent).filter(([id]) => !known.has(id) && !(E.lineById(S, id) && E.lineById(S, id).kind === 'bill')).reduce((a, [, v]) => a + v, 0);
-  const frag = [h('h2', { class: 'sec' }, 'Flexible', h('span', { class: 'r muted', text: 'the line marks today' })), h('div', { class: 'list' }, flexible.map(row))];
+  const goLog = (id) => () => { ui.tab = 'log'; ui.logFilter = id; render(); window.scrollTo(0, 0); };
+  const row = (bk) => {
+    const l = bk.line;
+    const over = bk.over > 0;
+    const isBill = l.kind === 'bill';
+    let right, small;
+    if (isBill) {
+      if (!bk.paid) { right = money(l.amount); small = `due ${E.shortDate(E.billDue(S, l, c.key))}`; }
+      else if (over) { right = money(bk.over); small = 'over · from flexible'; }
+      else if (bk.left > 0) { right = 'Paid'; small = `${money(bk.left)} under`; }
+      else { right = 'Paid'; small = money(bk.spent); }
+    } else if (over) { right = money(bk.over); small = l.group === 'fixed' ? 'over · from flexible' : 'over'; }
+    else { right = money(bk.left); small = `left of ${money(l.amount)}`; }
+    const pct = l.amount > 0 ? bk.spent / l.amount : (bk.spent > 0 ? 1 : 0);
+    return h('button', { class: 'env', onclick: isBill ? () => payBillAmount(c.key, l) : goLog(l.id) },
+      h('div', { class: 'top' }, h('span', { class: 'name', text: l.name }),
+        h('span', { class: 'left num' + (over ? ' over' : isBill && bk.paid ? ' ok' : '') }, right, h('small', { text: small }))),
+      bar(pct, over, isBill, !isBill && l.amount > 0));
+  };
+  const flexible = all.filter((b) => b.line.group === 'lifestyle');
+  const essential = all.filter((b) => b.line.group === 'fixed' && b.line.kind === 'envelope');
+  const bills = all.filter((b) => b.line.kind === 'bill');
+  const known = new Set(all.map((b) => b.line.id));
+  const orphan = E.entriesBetween(S, c.start, t).filter((e) => !known.has(e.lineId) && !E.lineById(S, e.lineId)).reduce((a, e) => a + e.amount, 0);
+  const sum = (arr, f) => arr.reduce((a, b) => a + f(b), 0);
+  const head = (title, arr) => {
+    const left = sum(arr, (b) => b.left);
+    return h('h2', { class: 'sec' }, title, h('span', { class: 'r num' + (left < 0 ? ' neg' : ' muted'), text: left >= 0 ? `${money(left)} left` : `${money(-left)} over` }));
+  };
+  const frag = [];
+  frag.push(head('Flexible', flexible), h('div', { class: 'list' }, flexible.map(row)));
   if (orphan) frag.push(h('p', { class: 'why', style: { marginTop: '8px' }, text: `${money(orphan)} EGP logged to buckets you’ve since removed counts as flexible spending.` }));
-  if (essential.length) frag.push(h('h2', { class: 'sec', text: 'Essentials' }), h('div', { class: 'list' }, essential.map(row)));
+  if (essential.length) frag.push(head('Essentials', essential), h('div', { class: 'list' }, essential.map(row)));
+  if (bills.length) frag.push(h('h2', { class: 'sec' }, 'Bills', h('span', { class: 'r muted num', text: `${bills.filter((b) => b.paid).length} of ${bills.length} paid` })), h('div', { class: 'list' }, bills.map(row)));
+  // toward debt / savings
+  const mv = E.cycleMoneyMoves(S, c.key);
+  const moves = [];
+  if (mv.debtTarget > 0 || mv.paidFromCycle > 0) moves.push(['Toward your debt', mv.debtTarget, mv.paidFromCycle]);
+  if (mv.saveTarget > 0 || mv.savedFromCycle > 0) moves.push(['To savings', mv.saveTarget, mv.savedFromCycle]);
+  if (moves.length) {
+    frag.push(h('h2', { class: 'sec', text: 'Debt & savings' }), h('div', { class: 'list' }, moves.map(([n, plan, done]) => {
+      const left = plan - done;
+      return h('button', { class: 'env', onclick: goLog('payments') },
+        h('div', { class: 'top' }, h('span', { class: 'name', text: n }),
+          h('span', { class: 'left num' + (left <= 0 ? ' ok' : '') }, left > 0 ? money(left) : 'Done', h('small', { text: left > 0 ? `to go of ${money(plan)}` : `${money(done)} this cycle` }))),
+        bar(plan ? done / plan : 1, false, true, false));
+    })));
+  }
   return frag;
 }
 
@@ -386,7 +424,8 @@ function planStartsBlock(sf) {
   const rows = [
     ...tasks.map((x) => [x.title + (x.from === 'savings' ? ' (from savings)' : ''), x.amount]),
     [`${plural(bills.length, 'bill', 'bills')}`, bills.reduce((a, x) => a + x.line.amount, 0)],
-    ['Debt payment', mv.debtTarget],
+    ['Toward your debt', mv.debtTarget],
+    ['To savings', mv.saveTarget],
     ['Essentials for the month', b.fixedSpend],
     ['Flexible money for the month', b.lifestyle],
   ].filter((r) => r[1] > 0);
@@ -413,6 +452,16 @@ function roadTeaser(t) {
 /* ---------------- actions ---------------- */
 function payBill(key, line) {
   commit(() => { (S.bills[key] ||= {})[line.id] = { date: today(), amount: line.amount, ts: Date.now() }; }, `${line.name} marked paid.`);
+}
+function payBillAmount(key, line) {
+  const rec = S.bills[key] && S.bills[key][line.id];
+  amountSheet({ title: line.name, label: 'How much did you actually pay?', initial: rec ? rec.amount : line.amount, allowZero: true, hint: `Planned: ${money(line.amount)} EGP. If you paid more, the extra comes out of your flexible money.`, confirm: 'Save' }, (p) => {
+    commit(() => {
+      const m = (S.bills[key] ||= {});
+      if (p === 0) { delete m[line.id]; if (!Object.keys(m).length) delete S.bills[key]; }
+      else m[line.id] = { date: rec ? rec.date : today(), amount: p, ts: Date.now() };
+    }, p === 0 ? `${line.name} marked not paid.` : p > line.amount ? `${line.name}: ${money(p - line.amount)} over plan.` : `${line.name} saved.`);
+  });
 }
 function payBills(key, lines) {
   commit(() => { const m = (S.bills[key] ||= {}); for (const l of lines) m[l.id] = { date: today(), amount: l.amount, ts: Date.now() }; }, `${plural(lines.length, 'bill', 'bills')} marked paid.`);
@@ -479,13 +528,20 @@ function openAdd(existing = null, preset = {}) {
   openSheet(existing ? 'Edit spending' : 'Add spending', (body, api) => {
     if (st.mode === 'sms') return buildSms(body, api);
     const key = E.planStarted(S, st.date) ? E.cycleKeyFor(S, st.date) : S.plan.startKey;
-    const all = E.activeLines(S, key).filter((l) => l.kind === 'envelope' && (l.amount > 0 || l.id === 'other'));
-    if (st.lineId && !all.some((l) => l.id === st.lineId)) { const l = E.lineById(S, st.lineId); if (l) all.push(l); }
+    const startedAt = E.planStarted(S, st.date);
+    const env = E.activeLines(S, key).filter((l) => l.kind === 'envelope' && (l.amount > 0 || l.id === 'other'));
     const rank = (l) => (l.id === 'other' ? 2 : l.group === 'lifestyle' ? 0 : 1);
-    all.sort((a, b) => rank(a) - rank(b));
-    const cs = E.planStarted(S, st.date) ? E.cycleInfo(S, st.date) : null;
+    env.sort((a, b) => rank(a) - rank(b));
+    const billLines = E.activeLines(S, key).filter((l) => l.kind === 'bill');
+    const debtChip = !existing && startedAt && E.totalDebt(S) > 0 ? { id: '__debt', name: 'Toward your debt', amount: 0, kind: 'debt' } : null;
+    const all = [...env];
+    if (st.lineId && !env.some((l) => l.id === st.lineId) && !billLines.some((l) => l.id === st.lineId)) { const l = E.lineById(S, st.lineId); if (l) all.push(l); }
+    const firstMore = all.length;
+    all.push(...billLines);
+    if (debtChip) all.push(debtChip);
+    const cs = startedAt ? E.cycleInfo(S, st.date) : null;
     const spent = cs ? E.spentByLine(S, cs.start, cs.end) : {};
-
+    const mvNow = cs ? E.cycleMoneyMoves(S, cs.key) : null;
     const amt = h('div', { class: 'v num' + (st.raw ? '' : ' placeholder') + (st.refund ? ' refund' : ''), text: (st.refund && st.raw ? '+' : '') + displayRaw(st.raw) });
     const warn = h('div', { class: 'warnline' });
     const save = h('button', { class: 'btn ink wide', text: existing ? 'Save changes' : 'Save' });
@@ -496,11 +552,18 @@ function openAdd(existing = null, preset = {}) {
       save.disabled = !(p > 0 && st.lineId);
       if (!st.confirmBig) warn.textContent = '';
     };
-    const chips = h('div', { class: 'buckets', role: 'radiogroup', 'aria-label': 'Bucket' }, all.map((l) => {
-      const left = l.amount - (spent[l.id] || 0);
-      return h('button', { class: 'bucket' + (st.lineId === l.id ? ' on' : ''), role: 'radio', 'aria-checked': st.lineId === l.id ? 'true' : 'false', onclick: () => { st.lineId = l.id; st.manual = true; st.confirmBig = false; api.refresh(); } },
-        l.name, cs && l.amount > 0 ? h('span', { class: 'sm num', text: left >= 0 ? money(left) : `−${money(-left)}` }) : null);
-    }));
+    const chipFor = (l) => {
+      let sm = null;
+      if (l.kind === 'debt') sm = mvNow && mvNow.debtRemaining > 0 ? money(mvNow.debtRemaining) : null;
+      else if (l.kind === 'bill') sm = cs ? (E.lineSpent(S, l, cs.key) > 0 ? 'paid' : money(l.amount)) : null;
+      else if (cs && l.amount > 0) { const left = l.amount - (spent[l.id] || 0); sm = left >= 0 ? money(left) : `−${money(-left)}`; }
+      return h('button', { class: 'bucket' + (st.lineId === l.id ? ' on' : ''), role: 'radio', 'aria-checked': st.lineId === l.id ? 'true' : 'false', onclick: () => { st.lineId = l.id; st.manual = true; st.confirmBig = false; if (l.kind === 'debt') st.refund = false; api.refresh(); } },
+        l.name, sm ? h('span', { class: 'sm num', text: sm }) : null);
+    };
+    const chips = h('div', { role: 'radiogroup', 'aria-label': 'Bucket' },
+      h('div', { class: 'buckets' }, all.slice(0, firstMore).map(chipFor)),
+      all.length > firstMore ? h('div', { class: 'chip-label', text: 'Bills & debt' }) : null,
+      all.length > firstMore ? h('div', { class: 'buckets more' }, all.slice(firstMore).map(chipFor)) : null);
     const note = h('input', { class: 'note-input', type: 'text', placeholder: 'Where? (optional)', value: st.note, maxlength: '60', autocomplete: 'off', autocapitalize: 'words', enterkeyhint: 'done', 'aria-label': 'Note' });
     note.addEventListener('input', () => {
       st.note = note.value;
@@ -514,7 +577,7 @@ function openAdd(existing = null, preset = {}) {
     Object.assign(dateInput.style, { position: 'absolute', inset: '0', opacity: '0', width: '100%', height: '100%' });
     dateInput.addEventListener('change', () => { if (E.isValidISO(dateInput.value) && dateInput.value <= t) { st.date = dateInput.value; api.refresh(); } });
     const datePill = h('label', { class: 'pill', style: { position: 'relative' } }, dateLabel, dateInput);
-    const refundPill = h('button', { class: 'pill' + (st.refund ? ' on' : ''), 'aria-pressed': st.refund ? 'true' : 'false', text: 'Money back', onclick: () => { st.refund = !st.refund; api.refresh(); } });
+    const refundPill = st.lineId === '__debt' ? null : h('button', { class: 'pill' + (st.refund ? ' on' : ''), 'aria-pressed': st.refund ? 'true' : 'false', text: 'Money back', onclick: () => { st.refund = !st.refund; api.refresh(); } });
     const smsPill = h('button', { class: 'pill', text: 'Paste bank SMS', onclick: () => { st.mode = 'sms'; api.refresh(); } });
 
     const press = (k) => {
@@ -534,6 +597,7 @@ function openAdd(existing = null, preset = {}) {
       if (st.busy) return;
       const p = E.parseAmount(st.raw);
       if (!(p > 0) || !st.lineId) return;
+      if (st.lineId === '__debt') { st.busy = true; api.close(); payDebt(p, 'cycle'); return; }
       const line = E.lineById(S, st.lineId);
       const big = p > E.toP(20000) || (line && line.amount > 0 && p > line.amount * 2 && p > E.toP(1000));
       if (big && !st.confirmBig && !st.refund) { st.confirmBig = true; warn.textContent = `${money(p)} EGP is a big one. Tap Save again if that’s right.`; return; }
@@ -635,7 +699,7 @@ function planScreen() {
 
   if (b.free < 0) put(scr, card('red', 'Needs a fix', `This plan spends ${money(-b.free)} EGP more than comes in`, 'Trim a flexible bucket in Edit plan so the month closes.', [h('button', { class: 'btn ink', text: 'Edit plan', onclick: openEditor })]));
 
-  const segs = [['Fixed bills & essentials', b.fixed, 'c-fixed'], ['Flexible', b.lifestyle, 'c-life'], ['Debt', mv.debtTarget, 'c-debt'], ['Savings', mv.saveTarget, 'c-save']];
+  const segs = [['Fixed bills & essentials', b.fixed, 'c-fixed'], ['Flexible', b.lifestyle, 'c-life'], ['Toward your debt', mv.debtTarget, 'c-debt'], ['To savings', mv.saveTarget, 'c-save']];
   const total = Math.max(b.income, segs.reduce((a, s) => a + s[1], 0));
   const split = h('div', { class: 'split', role: 'img', 'aria-label': segs.map((s) => `${s[0]} ${money(s[1])}`).join(', ') });
   for (const [, v, c] of segs) if (v > 0) { const i = h('i', { class: c }); i.style.flex = String(v / total); split.append(i); }
@@ -651,7 +715,10 @@ function planScreen() {
     let tag = null;
     if (withStatus && started) {
       const rec = paid[l.id];
-      tag = rec ? h('span', { class: 'tag ok', text: `Paid ${E.shortDate(rec.date)}` }) : h('span', { class: 'tag due', text: `Due ${E.shortDate(E.billDue(S, l, key))}` });
+      const sp = E.lineSpent(S, l, key);
+      tag = sp > l.amount ? h('span', { class: 'tag due', text: `Paid · ${money(sp - l.amount)} over` })
+        : sp > 0 ? h('span', { class: 'tag ok', text: rec ? `Paid ${E.shortDate(rec.date)}` : 'Paid' })
+        : h('span', { class: 'tag due', text: `Due ${E.shortDate(E.billDue(S, l, key))}` });
     }
     return h('div', { class: 'row' }, h('div', { class: 'main' }, h('div', { class: 'name', text: l.name }), metaBits.length ? h('div', { class: 'meta wrap', text: metaBits.join(' · ') }) : null),
       h('div', { style: { textAlign: 'right' } }, h('div', { class: 'amt num', text: money(l.amount) }), tag));
@@ -805,14 +872,14 @@ function logItems() {
   for (const [g, ps] of Object.entries(groups)) {
     const names = ps.map((p) => (S.plan.debts.find((d) => d.id === p.debtId) || {}).name || 'debt').join(' & ');
     const from = ps[0].from === 'savings' ? 'from savings' : ps[0].from === 'extra' ? 'leftover money' : 'this cycle';
-    items.push({ kind: 'debt', id: g, date: ps[0].date, ts: ps[0].ts, amount: ps.reduce((a, p) => a + p.amount, 0), title: `Paid ${E.lcName(names)}`, sub: `Debt payment · ${from}`, group: g });
+    items.push({ kind: 'debt', id: g, date: ps[0].date, ts: ps[0].ts, amount: ps.reduce((a, p) => a + p.amount, 0), title: `Paid ${E.lcName(names)}`, sub: `Toward your debt · ${from}`, group: g });
   }
   for (const s of S.savingsLog) items.push({ kind: 'save', id: s.id, date: s.date, ts: s.ts, amount: s.amount, title: s.amount >= 0 ? 'Into savings' : 'Out of savings', sub: s.note || 'Savings' });
   return items.sort((a, b) => (a.date !== b.date ? (a.date < b.date ? 1 : -1) : b.ts - a.ts));
 }
 function logScreen() {
   const scr = h('main', { class: 'screen' });
-  put(scr, topline('Log'), h('h1', { class: 'title', text: 'Everything, in order' }));
+  put(scr, topline('Log'), h('h1', { class: 'title', text: 'Everything, in order' }), S.entries.length || S.debtPays.length ? h('p', { class: 'why', style: { marginTop: '8px' }, text: 'Tap to edit. Swipe left to delete.' }) : null);
   const search = h('input', { class: 'search', type: 'search', placeholder: 'Search', value: ui.logQuery, 'aria-label': 'Search the log', autocomplete: 'off' });
   let tmr;
   search.addEventListener('input', () => { clearTimeout(tmr); tmr = setTimeout(() => { ui.logQuery = search.value; const list = scr.querySelector('#loglist'); list.replaceWith(buildList()); }, 120); });
@@ -846,9 +913,10 @@ function logScreen() {
       }
       const isIn = i.kind === 'spend' ? i.amount < 0 : i.kind === 'save' && i.amount < 0 ? false : false;
       const amtTxt = i.kind === 'spend' ? (i.amount < 0 ? `+${money(-i.amount)}` : money(i.amount)) : i.kind === 'save' ? (i.amount >= 0 ? money(i.amount) : `−${money(-i.amount)}`) : money(i.amount);
-      block.append(h('button', { class: 'row', onclick: () => openLogItem(i) },
+      const rowEl = h('button', { class: 'row', onclick: () => openLogItem(i) },
         h('div', { class: 'main' }, h('div', { class: 'name', text: i.title }), h('div', { class: 'meta', text: i.sub })),
-        h('div', { class: 'amt num' + (isIn ? ' pos' : '') + (i.kind !== 'spend' ? ' muted' : ''), text: amtTxt })));
+        h('div', { class: 'amt num' + (isIn ? ' pos' : '') + (i.kind !== 'spend' ? ' muted' : ''), text: amtTxt }));
+      block.append(swipeRow(rowEl, i.kind === 'spend' ? 'Delete' : 'Remove', () => removeLogItem(i)));
     }
     if (items.length > shown.length) put(wrap, h('button', { class: 'btn line wide', style: { marginTop: '18px' }, text: `Show ${Math.min(120, items.length - shown.length)} more`, onclick: () => { ui.logLimit += 120; const list = scr.querySelector('#loglist'); list.replaceWith(buildList()); } }));
     return wrap;
@@ -856,17 +924,46 @@ function logScreen() {
   put(scr, buildList());
   return scr;
 }
-function openLogItem(i) {
-  if (i.kind === 'spend') return openAdd(i.ref);
-  const text = i.kind === 'bill' ? `This marks ${i.title} as not paid for that cycle.` : i.kind === 'debt' ? 'This removes the payment. Your debt balance goes back up by the same amount.' : 'This removes the savings entry.';
-  confirmSheet(`${i.title} · ${money(Math.abs(i.amount))} EGP`, `${E.longDate(i.date)}. ${text}`, 'Undo this payment', () => commit(() => {
-    if (i.kind === 'bill') { delete S.bills[i.key][i.lineId]; if (!Object.keys(S.bills[i.key]).length) delete S.bills[i.key]; }
+function removeLogItem(i) {
+  commit(() => {
+    if (i.kind === 'spend') S.entries = S.entries.filter((e) => e.id !== i.id);
+    else if (i.kind === 'bill') { if (S.bills[i.key]) { delete S.bills[i.key][i.lineId]; if (!Object.keys(S.bills[i.key]).length) delete S.bills[i.key]; } }
     else if (i.kind === 'debt') {
       const ps = S.debtPays.filter((p) => (p.group || p.id) === i.group);
       for (const p of ps) if (p.taskId) { const tk = S.plan.tasks.find((x) => x.id === p.taskId); if (tk) tk.done = false; }
       S.debtPays = S.debtPays.filter((p) => (p.group || p.id) !== i.group);
     } else S.savingsLog = S.savingsLog.filter((s) => s.id !== i.id);
-  }, 'Payment removed.'), { danger: true });
+  }, i.kind === 'spend' ? 'Deleted.' : 'Payment removed.');
+}
+function openLogItem(i) {
+  if (i.kind === 'spend') return openAdd(i.ref);
+  const text = i.kind === 'bill' ? `This marks ${i.title} as not paid for that cycle.` : i.kind === 'debt' ? 'This removes the payment. Your debt balance goes back up by the same amount.' : 'This removes the savings entry.';
+  confirmSheet(`${i.title} · ${money(Math.abs(i.amount))} EGP`, `${E.longDate(i.date)}. ${text}`, 'Undo this payment', () => removeLogItem(i), { danger: true });
+}
+// Swipe left on a row to reveal Delete. A tap elsewhere or a swipe back closes it.
+let openSwipe = null;
+function swipeRow(rowEl, label, onAction) {
+  const act = h('button', { class: 'swipe-act', text: label, 'aria-hidden': 'true', tabindex: '-1', onclick: (e) => { e.stopPropagation(); onAction(); } });
+  const wrap = h('div', { class: 'swipe' }, act, rowEl);
+  const W = 92;
+  let x0 = null, y0 = null, dx = 0, base = 0, horiz = null;
+  const setX = (x, anim) => { rowEl.style.transition = anim ? 'transform .2s ease' : 'none'; rowEl.style.transform = x ? `translateX(${x}px)` : ''; };
+  const close = () => { setX(0, true); wrap.classList.remove('open'); if (openSwipe === close) openSwipe = null; };
+  rowEl.addEventListener('touchstart', (e) => { if (openSwipe && openSwipe !== close) openSwipe(); x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; dx = 0; horiz = null; base = wrap.classList.contains('open') ? -W : 0; }, { passive: true });
+  rowEl.addEventListener('touchmove', (e) => {
+    if (x0 == null) return;
+    const mx = e.touches[0].clientX - x0, my = e.touches[0].clientY - y0;
+    if (horiz == null && (Math.abs(mx) > 8 || Math.abs(my) > 8)) horiz = Math.abs(mx) > Math.abs(my);
+    if (!horiz) return;
+    dx = Math.min(0, Math.max(-W * 1.3, base + mx)); setX(dx, false);
+  }, { passive: true });
+  rowEl.addEventListener('touchend', () => {
+    if (x0 == null) return; x0 = null;
+    if (!horiz) return;
+    if (dx < -W / 2) { setX(-W, true); wrap.classList.add('open'); openSwipe = close; } else close();
+  });
+  rowEl.addEventListener('click', (e) => { if (wrap.classList.contains('open')) { e.stopImmediatePropagation(); e.preventDefault(); close(); } }, true);
+  return wrap;
 }
 
 /* ================= MENU ================= */
@@ -887,7 +984,15 @@ function openMenu() {
       item('Evening reminder', 'A nudge at 9pm to log the day', openReminderHelp),
     );
     if (!isStandalone()) list.append(item('Add to Home Screen', 'Use Margin like an app', openInstallHelp));
-    list.append(item('Erase everything', 'Start over on this phone', eraseAll, 'danger'));
+    const snap = readSnapshot();
+    if (snap) list.append(item('Bring back what I had', `From before the reset on ${E.shortDate(E.todayISO(new Date(snap.at)))}`, restoreSnapshot));
+    put(body, list, h('h2', { class: 'sec', text: 'Start over' }));
+    const list2 = h('div', { class: 'list' },
+      item('Start fresh from today', 'Keep the plan, set today’s real balances, clear the history', openFreshStart),
+      item('Clear spending log', 'Delete logged spending, keep payments and the plan', clearSpending),
+      item('Erase everything', 'Remove the plan and all data from this phone', eraseAll, 'danger'));
+    put(body, list2, h('p', { class: 'why', style: { marginTop: '16px', textAlign: 'center' }, text: `Margin ${VERSION} · Your data stays on this phone.` }));
+    return;
     put(body, list, h('p', { class: 'why', style: { marginTop: '16px', textAlign: 'center' }, text: `Margin ${VERSION} · Your data stays on this phone.` }));
   });
 }
@@ -956,11 +1061,83 @@ function importBackup() {
   });
   input.click();
 }
+const SNAP = 'margin.snapshot';
+function takeSnapshot() { try { localStorage.setItem(SNAP, JSON.stringify({ at: Date.now(), state: S })); return true; } catch { return false; } }
+function readSnapshot() { try { const x = JSON.parse(localStorage.getItem(SNAP) || 'null'); return x && x.state && x.at ? x : null; } catch { return null; } }
+function restoreSnapshot() {
+  const snap = readSnapshot(); if (!snap) return;
+  let st; try { st = E.validateState(snap.state); } catch { toast('That saved copy can’t be read.'); return; }
+  confirmSheet('Bring back the old data?', `This replaces what’s on this phone now with everything as it was before the reset on ${E.shortDate(E.todayISO(new Date(snap.at)))}.`, 'Bring it back', () => {
+    commit(() => { S = st; }, 'Your old data is back.');
+  });
+}
+function clearSpending() {
+  confirmSheet('Clear the spending log?', `This deletes ${plural(S.entries.length, 'logged spend', 'logged spends')}. Your plan, bills, debt payments and savings stay. A copy is kept so you can bring it back from the menu.`, 'Clear spending', () => {
+    if (!takeSnapshot()) { toast('Couldn’t keep a copy first, so nothing was cleared.'); return; }
+    commit(() => { S.entries = []; S.checkins = {}; S.sweeps = {}; }, 'Spending log cleared.');
+  }, { danger: true });
+}
+function openFreshStart() {
+  const t = today();
+  const started = E.planStarted(S, t);
+  const c = started ? E.cycleInfo(S, t) : null;
+  const d = {
+    debts: E.debtsOrdered(S).map((x) => ({ id: x.id, name: x.name, raw: rawFromP(E.debtBalance(S, x)) })),
+    sav: rawFromP(E.savingsBalance(S)),
+    tasks: E.pendingTasks(S).map((x) => ({ id: x.id, title: x.title, amount: x.amount, done: false })),
+    flexLeft: c ? rawFromP(Math.max(0, E.safeToSpend(S, t).cycleLeft)) : '',
+    bills: c ? E.billsForCycle(S, c.key).map((b) => ({ id: b.line.id, name: b.line.name, amount: b.line.amount, paid: !!b.paid })) : [],
+    debtPaid: c ? E.cycleMoneyMoves(S, c.key).paidFromCycle > 0 : false,
+    err: '',
+  };
+  openSheet('Start fresh from today', (body, api) => {
+    const fld = (label, val, on, hint) => { const i = h('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off', value: val }); i.addEventListener('input', () => on(i.value)); return h('div', { class: 'field' }, h('label', { text: label }), i, hint ? h('div', { class: 'hint', text: hint }) : null); };
+    const tick = (label, on, val) => { const b = h('button', { class: 'tickrow' + (val ? ' on' : ''), 'aria-pressed': val ? 'true' : 'false' }, h('span', { class: 'box' }), label); b.addEventListener('click', () => { on(!val); api.refresh(); }); return b; };
+    put(body, h('p', { class: 'why', style: { marginTop: '4px' }, text: 'Your plan stays. Tell Margin where things really stand today, and it starts counting from here. A copy of everything is kept in the menu in case you change your mind.' }));
+    if (d.debts.length) put(body, h('h2', { class: 'sec', text: 'What you owe today' }), d.debts.map((x) => fld(x.name, x.raw, (v) => { x.raw = v; })));
+    put(body, h('h2', { class: 'sec', text: 'Savings today' }), fld('In savings now', d.sav, (v) => { d.sav = v; }));
+    if (d.tasks.length) put(body, h('h2', { class: 'sec', text: 'Scheduled payments' }), d.tasks.map((x) => tick(`${x.title} (${money(x.amount)}) is already paid`, (v) => { x.done = v; }, x.done)));
+    if (c) {
+      put(body, h('h2', { class: 'sec', text: 'This pay cycle' }),
+        fld('Flexible money left until payday', d.flexLeft, (v) => { d.flexLeft = v; }, `For takeout, shopping and going out until ${E.shortDate(c.nextPayday)}.`));
+      if (d.bills.length) put(body, h('div', { class: 'field' }, h('label', { text: 'Bills already paid this cycle' })), d.bills.map((b) => tick(`${b.name} · ${money(b.amount)}`, (v) => { b.paid = v; }, b.paid)));
+      if (E.cycleMoneyMoves(S, c.key).debtTarget > 0) put(body, tick('I already paid this cycle’s debt amount', (v) => { d.debtPaid = v; }, d.debtPaid));
+    }
+    const err = h('div', { class: 'errmsg', text: d.err });
+    put(body, err, h('button', { class: 'btn ink wide', style: { marginTop: '14px' }, text: 'Start fresh', onclick: () => {
+      try {
+        const bals = d.debts.map((x) => { const p = E.parseAmount(x.raw || '0'); if (p == null) throw new Error(`Check the amount for ${x.name}.`); return [x.id, p]; });
+        const sav = E.parseAmount(d.sav || '0'); if (sav == null) throw new Error('Check the savings amount.');
+        let flexLeft = null;
+        if (c) { flexLeft = E.parseAmount(d.flexLeft || '0'); if (flexLeft == null) throw new Error('Check the flexible money amount.'); }
+        if (!takeSnapshot()) throw new Error('Couldn’t keep a copy first, so nothing was changed.');
+        api.close();
+        commit(() => {
+          const now = Date.now();
+          const mvTarget = c ? E.cycleMoneyMoves(S, c.key).debtTarget : 0;
+          S.entries = []; S.bills = {}; S.debtPays = []; S.savingsLog = []; S.checkins = {}; S.sweeps = {}; S.warmup = null;
+          for (const [id, p] of bals) { const x = S.plan.debts.find((y) => y.id === id); x.balance = p; x.asOf = now; }
+          S.plan.savings.balance = sav; S.plan.savings.asOf = now;
+          for (const tk of d.tasks) { const x = S.plan.tasks.find((y) => y.id === tk.id); if (x && tk.done) x.done = true; }
+          if (c) {
+            const pool = E.budgetFor(S, c.key).lifestyle;
+            const used = pool - flexLeft;
+            if (used !== 0) S.entries.push({ id: E.uid(), date: c.start, amount: used, lineId: 'other', note: 'Spent before starting fresh', src: 'quick', ts: now - 2 });
+            for (const b of d.bills) if (b.paid) (S.bills[c.key] ||= {})[b.id] = { date: c.start, amount: b.amount, ts: now - 2 };
+            // already-paid debt counts for this cycle but not again against the balances you just entered
+            const first = E.debtsOrdered(S)[0];
+            if (d.debtPaid && mvTarget > 0 && first) S.debtPays.push({ id: E.uid(), debtId: first.id, amount: mvTarget, date: c.start, from: 'cycle', taskId: null, group: E.uid(), ts: now - 1 - 1e9 });
+          }
+        }, 'Fresh start. Counting from today.', { undo: true });
+      } catch (e) { d.err = e.message; err.textContent = e.message; }
+    } }));
+  });
+}
 function eraseAll() {
   openSheet('Erase everything', (body, api) => {
     const input = h('input', { type: 'text', placeholder: 'Type ERASE', autocapitalize: 'characters', autocomplete: 'off' });
     const btn = h('button', { class: 'btn danger line wide', style: { marginTop: '14px' }, text: 'Erase this phone’s data', disabled: true, onclick: () => {
-      try { localStorage.removeItem(KEY); localStorage.removeItem(PREV); } catch { /* ignore */ }
+      try { localStorage.removeItem(KEY); localStorage.removeItem(PREV); localStorage.removeItem(SNAP); } catch { /* ignore */ }
       S = E.emptyState(); bootError = null; api.close(); ui.tab = 'today'; render(); toast('Erased.');
     } });
     input.addEventListener('input', () => { btn.disabled = input.value.trim().toUpperCase() !== 'ERASE'; });
@@ -1157,7 +1334,7 @@ function setupScreen() {
       h('p', { class: 'p', text: `It starts on payday, ${E.longDate(E.cycleStart(tmp, k))}.` }),
       h('div', { class: 'preview' },
         row('Income', money(b.income)), row('Bills & essentials', money(b.fixed)), row('Flexible spending', money(b.lifestyle)),
-        row('Debt payment', money(mv.debtTarget)), mv.saveTarget ? row('Savings', money(mv.saveTarget)) : null,
+        mv.debtTarget ? row('Toward your debt', money(mv.debtTarget)) : null, mv.saveTarget ? row('To savings', money(mv.saveTarget)) : null,
         pr.debtFreeKey && pr.debtFreeKey !== 'now' ? row('Free of debt by', E.monthYear(pr.debtFreeKey)) : null),
       replacing ? h('p', { class: 'why', style: { marginTop: '14px' }, text: 'This replaces the plan on this phone. Spending you’ve already logged stays.' }) : null,
       h('div', { class: 'grow' }),

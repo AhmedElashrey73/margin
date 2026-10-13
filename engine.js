@@ -171,8 +171,38 @@ export function spentByLine(state, from, to) {
   return m;
 }
 
+/* ---------------- buckets: planned / spent / left for every line ----------------
+   A bill counts as spent by its "Paid" record plus any spending logged against it.
+   Overspending on a fixed line (a bill or an essential) comes out of the flexible money. */
+export function lineSpent(state, line, key, upTo) {
+  const start = cycleStart(state, key);
+  const end = upTo || cycleEnd(state, key);
+  let sum = 0;
+  for (const e of state.entries) if (e.lineId === line.id && e.date >= start && e.date <= end) sum += e.amount;
+  const rec = state.bills[key] && state.bills[key][line.id];
+  if (rec && rec.date <= end) sum += rec.amount;
+  return sum;
+}
+export function fixedOverage(state, key, upTo) {
+  let over = 0;
+  for (const l of activeLines(state, key)) {
+    if (l.group !== 'fixed') continue;
+    const sp = lineSpent(state, l, key, upTo);
+    if (sp > l.amount) over += sp - l.amount;
+  }
+  return over;
+}
+export function buckets(state, key, upTo) {
+  return activeLines(state, key).filter((l) => l.amount > 0 || lineSpent(state, l, key, upTo) !== 0).map((l) => {
+    const spent = lineSpent(state, l, key, upTo);
+    const left = l.amount - spent;
+    return { line: l, planned: l.amount, spent, left, over: left < 0 ? -left : 0, paid: l.kind === 'bill' ? spent > 0 : null };
+  });
+}
+
 /* "Safe to spend today": what's left in the flexible pool, spread evenly over the days left.
-   Today's allowance is fixed at the start of the day so it doesn't shrink as you log today. */
+   Today's allowance is fixed at the start of the day so it doesn't shrink as you log today.
+   Unspent days roll forward automatically (more per day); overspending pulls every later day down. */
 export function safeToSpend(state, today) {
   if (!planStarted(state, today)) return warmupSafe(state, today);
   const c = cycleInfo(state, today);
@@ -182,15 +212,24 @@ export function safeToSpend(state, today) {
     if (!isLifestyleEntry(state, e)) continue;
     if (e.date < today) before += e.amount; else todaySpent += e.amount;
   }
-  const poolLeftStartOfDay = b.lifestyle - before;
+  const yesterday = addDays(today, -1);
+  const overBefore = yesterday >= c.start ? fixedOverage(state, c.key, yesterday) : 0;
+  const overToday = fixedOverage(state, c.key, today) - overBefore;
+  const poolLeftStartOfDay = b.lifestyle - before - overBefore;
   const daily = poolLeftStartOfDay > 0 ? Math.floor(poolLeftStartOfDay / c.daysLeft / 100) * 100 : 0; // whole pounds
+  let delta = null;
+  if (yesterday >= c.start) delta = daily - safeToSpend(state, yesterday).daily;
   return {
     mode: 'cycle',
     pool: b.lifestyle,
     daily,
-    spentToday: todaySpent,
-    leftToday: daily - todaySpent,
-    cycleLeft: b.lifestyle - before - todaySpent,
+    delta,
+    spentToday: todaySpent + overToday,
+    flexSpentToday: todaySpent,
+    overToday,
+    fixedOver: overBefore + overToday,
+    leftToday: daily - todaySpent - overToday,
+    cycleLeft: b.lifestyle - before - todaySpent - overBefore - overToday,
     daysLeft: c.daysLeft,
     cycle: c,
   };
@@ -234,7 +273,10 @@ export function billsForCycle(state, key) {
   const paid = (state.bills[key]) || {};
   return activeLines(state, key)
     .filter((l) => l.kind === 'bill')
-    .map((l) => ({ line: l, due: billDue(state, l, key), paid: paid[l.id] || null }))
+    .map((l) => {
+      const spent = lineSpent(state, l, key);
+      return { line: l, due: billDue(state, l, key), paid: paid[l.id] || (spent > 0 ? { amount: spent, date: null } : null), spent };
+    })
     .sort((a, b) => (a.due < b.due ? -1 : a.due > b.due ? 1 : 0));
 }
 
