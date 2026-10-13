@@ -247,8 +247,10 @@ function warmupSafe(state, today) {
   }
   const left = w.amount - before;
   const daily = left > 0 ? Math.floor(left / daysLeft / 100) * 100 : 0;
+  const y = addDays(today, -1);
+  const delta = y >= w.setOn ? daily - warmupSafe(state, y).daily : null;
   return {
-    mode: 'warmup', unset: false, pool: w.amount, daily,
+    mode: 'warmup', unset: false, pool: w.amount, daily, delta,
     spentToday: todaySpent, leftToday: daily - todaySpent,
     cycleLeft: left - todaySpent, daysLeft, planStart: startDate,
   };
@@ -364,15 +366,22 @@ export function lcName(n) { const w = n.split(' ')[0]; return w.length > 1 && w 
 export function flexSpentOn(state, iso) {
   return state.entries.filter((e) => e.date === iso && isLifestyleEntry(state, e)).reduce((a, e) => a + e.amount, 0);
 }
+// Is the app counting days yet? (plan started, or the money-until-payday amount is set)
+export function tracking(state, iso) {
+  if (!state.plan) return false;
+  if (planStarted(state, iso)) return true;
+  return !!(state.warmup && iso >= state.warmup.setOn);
+}
 // Which reaction a just-saved spend should cause, comparing state before and after. At most one.
 export function spendReaction(before, after, entry, today) {
   if (!entry || entry.date !== today || entry.amount <= 0) return null;
-  if (!planStarted(after, today)) return null;
+  if (!tracking(after, today)) return null;
   const line = lineById(after, entry.lineId);
   if (!line || line.group !== 'lifestyle') return null;
   const fx = after.meta.fx;
-  const key = cycleKeyFor(after, today);
-  if (line.id !== 'other' && line.amount > 0) {
+  const live = planStarted(after, today);
+  const key = live ? cycleKeyFor(after, today) : null;
+  if (live && line.id !== 'other' && line.amount > 0) {
     const was = line.amount - lineSpent(before, line, key);
     const now = line.amount - lineSpent(after, line, key);
     if (was >= 0 && now < 0 && !fx.buckets[`${key}:${line.id}`]) return { kind: 'bucket', key: `${key}:${line.id}`, line, over: -now };
@@ -391,18 +400,18 @@ export function clearedDebts(before, after) {
 // Reactions due when the app opens (or the day rolls over), in display order.
 export function openReactions(state, today) {
   const out = [];
-  if (!state.plan || !planStarted(state, today)) return out;
+  if (!state.plan) return out;
   const fx = state.meta.fx;
-  const c = cycleInfo(state, today);
-  const pk = prevKey(c.key);
-  if (pk >= state.plan.startKey && c.dayIndex <= 10 && !fx.cycles[pk]) {
+  const c = planStarted(state, today) ? cycleInfo(state, today) : null;
+  const pk = c ? prevKey(c.key) : null;
+  if (c && pk >= state.plan.startKey && c.dayIndex <= 10 && !fx.cycles[pk]) {
     const ps = cycleStart(state, pk), pe = cycleEnd(state, pk);
     const flexEntries = entriesBetween(state, ps, pe).filter((e) => isLifestyleEntry(state, e));
     const left = budgetFor(state, pk).lifestyle - flexEntries.reduce((a, e) => a + e.amount, 0) - fixedOverage(state, pk, pe);
     if (flexEntries.length >= 3 && left >= 0) out.push({ kind: 'cycle', key: pk, left });
   }
   const y = addDays(today, -1);
-  if (fx.lastSeen === y && planStarted(state, y) && !fx.nospend[y] && flexSpentOn(state, y) === 0) out.push({ kind: 'nospend', date: y, when: 'yesterday' });
+  if (fx.lastSeen === y && tracking(state, y) && !fx.nospend[y] && flexSpentOn(state, y) === 0) out.push({ kind: 'nospend', date: y, when: 'yesterday' });
   return out;
 }
 

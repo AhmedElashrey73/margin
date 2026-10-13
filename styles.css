@@ -338,3 +338,18 @@ h2.sec .r.neg { color: var(--red); }
 .confetti { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 1; }
 .confetti i { position: absolute; top: -20px; border-radius: 1.5px; animation-name: fall; animation-timing-function: cubic-bezier(.3,.4,.6,1); animation-fill-mode: both; }
 @keyframes fall { to { top: 105%; transform: translateX(30px) rotate(540deg); } }
+
+/* ---------- v1.3: rows with inline actions ---------- */
+.env { display: flex; align-items: center; gap: 12px; padding: 0; }
+.env:active { background: transparent; }
+.env-main { flex: 1; min-width: 0; display: block; width: 100%; text-align: left; padding: 14px 0 12px; }
+button.env-main:active { background: var(--sunk); }
+.env .act { height: 36px; padding: 0 16px; flex-shrink: 0; font-size: 14px; }
+h2.sec .r.link { letter-spacing: 0; text-transform: none; font-size: 13.5px; padding: 0; }
+.delta-tag { font-family: var(--sans); font-size: 14px; font-weight: 600; letter-spacing: 0; padding: 3px 9px; border-radius: 12px; align-self: center; margin-left: 2px; }
+.delta-tag.up { color: var(--green); background: var(--green-soft); }
+.delta-tag.down { color: var(--red); background: var(--red-soft); }
+.preview-head { margin-top: 34px; padding-top: 22px; border-top: 1px solid var(--rule); }
+.preview-title { font-family: var(--serif); font-weight: 500; font-size: 24px; line-height: 1.2; margin-top: 6px; }
+.is-preview .bar { display: none; }
+.is-preview .env-main { padding: 13px 0; }

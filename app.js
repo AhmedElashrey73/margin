@@ -2,7 +2,7 @@ import * as E from './engine.js';
 
 const KEY = 'margin.state';
 const PREV = 'margin.prev';
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 
 let S = null;               // app state
 let bootError = null;       // { kind, raw }
@@ -187,17 +187,11 @@ function todayScreen() {
   const sf = E.safeToSpend(S, t);
   const scr = h('main', { class: 'screen' });
   put(scr, topline(E.longDate(t)));
-
   if (sf.mode === 'warmup' && sf.unset) put(scr, warmupSetup(sf));
   else put(scr, hero(sf, t));
-
   put(scr, ...actionCards(t, started));
-
-  if (started) put(scr, ...envelopesBlock(t));
-  else put(scr, ...planStartsBlock(sf));
-
+  put(scr, ...bucketsBlock(t, started));
   put(scr, roadTeaser(t));
-
   const n = E.streak(S, t);
   if (n >= 2) put(scr, h('p', { class: 'muted', style: { textAlign: 'center', fontSize: '13px', marginTop: '28px' }, text: `${n} days logged in a row` }));
   return scr;
@@ -207,24 +201,19 @@ function hero(sf, t) {
   const over = sf.leftToday < 0;
   const wrap = h('section', { class: 'hero' });
   put(wrap, h('div', { class: 'label', text: over ? 'Over today’s share by' : 'Safe to spend today' }));
-  put(wrap, h('div', { class: 'big num' + (over ? ' over' : '') }, h('span', { text: money(Math.abs(sf.leftToday)) }), h('span', { class: 'cur', text: 'EGP' })));
-  const lines = [];
-  if (sf.mode === 'cycle' && sf.delta) {
-    const up = sf.delta > 0;
-    lines.push(h('div', { class: 'delta ' + (up ? 'up' : 'down') }, h('b', { class: 'num', text: (up ? '+' : '−') + money(Math.abs(sf.delta)) }),
-      up ? ' more than yesterday — unspent money rolls forward.' : ' less than yesterday — yesterday’s spending is spread over the days left.'));
-  }
-  if (sf.overToday > 0) lines.push(h('div', {}, h('b', { class: 'num', text: money(sf.overToday) }), ' of today’s share went to a bill or essential that ran over.'));
-  if (sf.spentToday > 0) lines.push(h('div', {}, 'You’ve spent ', h('b', { class: 'num', text: money(sf.spentToday) }), ' of today’s ', h('b', { class: 'num', text: money(sf.daily) }), '.'));
+  const tag = sf.delta ? h('span', { class: 'delta-tag num ' + (sf.delta > 0 ? 'up' : 'down'), title: sf.delta > 0 ? 'More than yesterday: unspent money rolls forward' : 'Less than yesterday: yesterday’s spending is spread over the days left', text: (sf.delta > 0 ? '+' : '−') + money(Math.abs(sf.delta)) }) : null;
+  put(wrap, h('div', { class: 'big num' + (over ? ' over' : '') }, h('span', { text: money(Math.abs(sf.leftToday)) }), h('span', { class: 'cur', text: 'EGP' }), tag));
+  let line;
   if (sf.mode === 'cycle') {
-    if (sf.cycleLeft >= 0) lines.push(h('div', {}, h('b', { class: 'num', text: money(sf.cycleLeft) }), ` flexible money left until payday, ${E.shortDate(sf.cycle.nextPayday)}.`));
-    else lines.push(h('div', {}, 'This cycle is ', h('b', { class: 'num', text: money(-sf.cycleLeft) }), ' over the flexible budget. Tomorrow’s share is zero until payday.'));
+    line = sf.cycleLeft >= 0
+      ? h('div', {}, h('b', { class: 'num', text: money(sf.cycleLeft) }), ` flexible left until payday, ${E.shortDate(sf.cycle.nextPayday)}.`)
+      : h('div', {}, h('b', { class: 'num', text: money(-sf.cycleLeft) }), ' over the flexible budget this cycle.');
   } else {
-    if (sf.cycleLeft >= 0) lines.push(h('div', {}, h('b', { class: 'num', text: money(sf.cycleLeft) }), ` left until your plan starts on ${E.shortDate(sf.planStart)}. `, h('button', { class: 'link', text: 'Change', onclick: editWarmup })));
-    else lines.push(h('div', {}, 'You’re ', h('b', { class: 'num', text: money(-sf.cycleLeft) }), ' past what you set aside until payday. ', h('button', { class: 'link', text: 'Change', onclick: editWarmup })));
+    line = sf.cycleLeft >= 0
+      ? h('div', {}, h('b', { class: 'num', text: money(sf.cycleLeft) }), ` left until your plan starts, ${E.shortDate(sf.planStart)}. `, h('button', { class: 'link', text: 'Change', onclick: editWarmup }))
+      : h('div', {}, h('b', { class: 'num', text: money(-sf.cycleLeft) }), ' past what you set aside until payday. ', h('button', { class: 'link', text: 'Change', onclick: editWarmup }));
   }
-  put(wrap, h('div', { class: 'sub' }, lines));
-  // day ruler
+  put(wrap, h('div', { class: 'sub' }, line));
   let start, end;
   if (sf.mode === 'cycle') { start = sf.cycle.start; end = sf.cycle.end; } else { start = S.warmup.setOn; end = E.addDays(sf.planStart, -1); }
   const len = Math.max(1, E.daysBetween(start, end) + 1);
@@ -246,10 +235,10 @@ function warmupSetup(sf) {
   const set = () => {
     const p = E.parseAmount(input.value);
     if (p == null) { err.textContent = 'Type an amount, like 6000.'; return; }
-    commit(() => { S.warmup = { amount: p, setOn: today() }; }, 'Set. Your daily share is ready.');
+    commit(() => { S.warmup = { amount: p, setOn: today() }; S.meta.fx.lastSeen = today(); }, 'Set. Your daily share is ready.');
   };
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') set(); });
-  put(wrap, 
+  put(wrap,
     h('div', { class: 'label', text: 'Before your plan starts' }),
     h('h1', { class: 'title', text: `Your plan starts on payday, ${E.longDate(sf.planStart)}.` }),
     h('p', { class: 'lede', text: 'Until then, how much money do you have left to spend? Count everything — fuel and groceries too.' }),
@@ -273,176 +262,161 @@ function card(cls, k, t, d, acts) {
     acts && acts.length ? h('div', { class: 'acts' }, acts) : null);
 }
 
+// Cards only for things that need a decision. At most two at a time, most important first.
 function actionCards(t, started) {
   const out = [];
   if (saveFailed) out.push(card('red', 'Not saved', 'Margin couldn’t save on this phone', 'Your last change may be lost if you close the app. Make a backup now.', [h('button', { class: 'btn ink', text: 'Back up now', onclick: exportBackup })]));
-
-  // scheduled one-off payments (e.g. the card statement)
+  const queue = [];
   for (const task of E.pendingTasks(S)) {
     const until = E.daysBetween(t, task.due);
     if (until > 3) continue;
     const when = until > 1 ? `Due in ${until} days · ${E.shortDate(task.due)}` : until === 1 ? 'Due tomorrow' : until === 0 ? 'Due today' : `Overdue since ${E.shortDate(task.due)}`;
-    out.push(card(until < 0 ? 'red' : '', when, `${task.title} · ${money(task.amount)} EGP`,
+    queue.push(card(until < 0 ? 'red' : '', when, `${task.title} · ${money(task.amount)} EGP`,
       task.from === 'savings' ? `Pay this from your savings (${money(E.savingsBalance(S))} EGP).` : 'Pay this from this cycle’s money.',
       [h('button', { class: 'btn ink', text: 'Mark as paid', onclick: () => payTask(task) })]));
   }
-
   if (started) {
     const c = E.cycleInfo(S, t);
-    // sweep last cycle
     const pk = E.prevKey(c.key);
     if (pk >= S.plan.startKey && !S.sweeps[pk] && c.dayIndex <= 10) {
       const ps = E.cycleStart(S, pk), pe = E.cycleEnd(S, pk);
       const pool = E.budgetFor(S, pk).lifestyle;
-      const spent = E.entriesBetween(S, ps, pe).filter((e) => E.isLifestyleEntry(S, e)).reduce((a, e) => a + e.amount, 0);
+      const spent = E.entriesBetween(S, ps, pe).filter((e) => E.isLifestyleEntry(S, e)).reduce((a, e) => a + e.amount, 0) + E.fixedOverage(S, pk, pe);
       const left = pool - spent;
       if (left > 0) {
         const toDebt = E.totalDebt(S) > 0;
-        out.push(card('green', 'Last cycle', `You finished with ${money(left)} EGP unspent`, toDebt ? 'Put it toward your debt? It brings the debt-free date closer.' : 'Move it to savings so it doesn’t drift away?', [
+        queue.push(card('green', 'Last cycle', `You finished with ${money(left)} EGP unspent`, toDebt ? 'Put it toward your debt? It brings the debt-free date closer.' : 'Move it to savings so it doesn’t drift away?', [
           h('button', { class: 'btn green', text: toDebt ? 'Put toward debt' : 'Move to savings', onclick: () => sweep(pk, left, toDebt) }),
           h('button', { class: 'btn quiet', text: 'Keep it', onclick: () => commit(() => { S.sweeps[pk] = 'dismissed'; }, null) }),
         ]));
       } else if (left < 0) {
-        out.push(card('', 'Last cycle', `${money(-left)} EGP over the flexible budget`, 'That’s okay. This cycle is a clean slate — the daily share keeps you on track.', [
+        queue.push(card('', 'Last cycle', `${money(-left)} EGP over the flexible budget`, 'That’s okay. This cycle is a clean slate — the daily share keeps you on track.', [
           h('button', { class: 'btn line', text: 'Got it', onclick: () => commit(() => { S.sweeps[pk] = 'dismissed'; }, null) }),
         ]));
       }
     }
-    // bills due
-    const due = E.billsForCycle(S, c.key).filter((b) => !b.paid && b.due <= t);
-    if (due.length) {
-      const total = due.reduce((a, b) => a + b.line.amount, 0);
-      const rows = due.map((b) => h('div', { class: 'row' },
-        h('button', { class: 'main', style: { textAlign: 'left' }, onclick: () => payBillAmount(c.key, b.line) }, h('div', { class: 'name', text: b.line.name }), h('div', { class: 'meta num', text: `${money(b.line.amount)} EGP · tap if it was different` })),
-        h('button', { class: 'btn line', text: 'Paid', onclick: () => payBill(c.key, b.line) })));
-      const box = card('', due.length === 1 ? 'Bill due' : 'Bills due', `${plural(due.length, 'bill', 'bills')} · ${money(total)} EGP`, null,
-        due.length > 1 ? [h('button', { class: 'btn ink', text: 'Mark all paid', onclick: () => payBills(c.key, due.map((b) => b.line)) })] : null);
-      box.insertBefore(h('div', { class: 'list', style: { marginTop: '10px' } }, rows), box.querySelector('.acts'));
-      out.push(box);
-    }
-    // debt / savings move for this cycle
-    const mv = E.cycleMoneyMoves(S, c.key);
-    if (mv.debtRemaining > 0) {
-      const first = E.debtsOrdered(S).find((d) => E.debtBalance(S, d) > 0);
-      const partial = mv.paidFromCycle > 0;
-      out.push(card('', partial ? 'Toward your debt · the rest' : 'Toward your debt this cycle', `Pay ${money(mv.debtRemaining)} EGP to ${first ? E.lcName(first.name) : 'your debt'}`,
-        first && first.note ? first.note : 'Paying debt first saves you interest.',
-        [h('button', { class: 'btn ink', text: 'Done', onclick: () => payDebt(mv.debtRemaining, 'cycle') }),
-          h('button', { class: 'btn quiet', text: 'Different amount', onclick: () => amountSheet({ title: 'Toward your debt', label: 'How much did you pay?', initial: mv.debtRemaining, confirm: 'Save payment' }, (p) => payDebt(p, 'cycle')) })]));
-    } else if (mv.saveRemaining > 0) {
-      out.push(card('green', 'This cycle’s saving', `Move ${money(mv.saveRemaining)} EGP to savings`, 'Pay yourself first, before the month gets a vote.',
-        [h('button', { class: 'btn green', text: 'Done', onclick: () => addSavings(mv.saveRemaining, 'cycle') }),
-          h('button', { class: 'btn quiet', text: 'Different amount', onclick: () => amountSheet({ title: 'Savings', label: 'How much did you move?', initial: mv.saveRemaining, confirm: 'Save' }, (p) => addSavings(p, 'cycle')) })]));
-    }
   }
-
-  // evening check-in
   const hasToday = S.entries.some((e) => e.date === t) || S.checkins[t];
-  if (hourNow() >= 18 && !hasToday) {
-    out.push(card('', 'Evening check-in', 'Anything you spent today?', 'Cash counts too — takeout, coffee, a ride.', [
+  if (hourNow() >= 18 && !hasToday && E.tracking(S, t)) {
+    queue.push(card('', 'Evening check-in', 'Anything you spent today?', 'Cash counts too — takeout, coffee, a ride.', [
       h('button', { class: 'btn ink', text: 'Add spending', onclick: () => openAdd() }),
       h('button', { class: 'btn line', text: 'Nothing today', onclick: () => commit(() => { S.checkins[t] = 'none'; }, null, {
-        react: () => { if (!E.planStarted(S, t) || E.flexSpentOn(S, t) !== 0 || S.meta.fx.nospend[t]) return null; S.meta.fx.nospend[t] = 1; return { kind: 'nospend', when: 'today' }; },
+        react: () => { if (!E.tracking(S, t) || E.flexSpentOn(S, t) !== 0 || S.meta.fx.nospend[t]) return null; S.meta.fx.nospend[t] = 1; return { kind: 'nospend', when: 'today' }; },
       }) }),
     ]));
   }
-
-  // backup nudge
   const lb = S.meta.lastBackup;
   if (!ui.laterBackup && S.entries.length >= 10 && (!lb || Date.now() - lb > 14 * 864e5)) {
-    out.push(card('', 'Keep it safe', 'Back up your log', 'Everything lives only on this phone. A backup saves a copy to your Files.', [
+    queue.push(card('', 'Keep it safe', 'Back up your log', 'Everything lives only on this phone. A backup saves a copy to your Files.', [
       h('button', { class: 'btn ink', text: 'Back up now', onclick: exportBackup }),
       h('button', { class: 'btn quiet', text: 'Later', onclick: () => { ui.laterBackup = true; render(); } }),
     ]));
   }
-  // Safari, not installed
   if (isIOS() && !isStandalone()) {
-    out.push(card('', 'Make it an app', 'Add Margin to your Home Screen', 'It opens full screen, works offline, and Safari won’t tidy away your data.', [h('button', { class: 'btn line', text: 'Show me how', onclick: openInstallHelp })]));
+    queue.push(card('', 'Make it an app', 'Add Margin to your Home Screen', 'It opens full screen, works offline, and Safari won’t tidy away your data.', [h('button', { class: 'btn line', text: 'Show me how', onclick: openSetupTips })]));
   }
-  return out;
+  return out.concat(queue.slice(0, 2));
 }
 
-function envelopesBlock(t) {
-  const c = E.cycleInfo(S, t);
-  const all = E.buckets(S, c.key, t);
-  const pace = (c.dayIndex - 0.5) / c.length;
+// The cycle at a glance: every bucket with planned / left, and the action right on its row.
+// Before payday it shows the first cycle as a preview.
+function bucketsBlock(t, live) {
+  const key = live ? E.cycleKeyFor(S, t) : S.plan.startKey;
+  const c = live ? E.cycleInfo(S, t) : null;
+  const all = live ? E.buckets(S, key, t) : E.activeLines(S, key).filter((l) => l.amount > 0).map((l) => ({ line: l, planned: l.amount, spent: 0, left: l.amount, over: 0, paid: l.kind === 'bill' ? false : null }));
+  const pace = c ? (c.dayIndex - 0.5) / c.length : 0;
+  const goLog = (id) => () => { ui.tab = 'log'; ui.logFilter = id; render(); window.scrollTo(0, 0); };
   const bar = (pct, over, green, showPace) => {
     const b = h('div', { class: 'bar' + (over ? ' r' : green ? ' g' : '') }, h('i'));
     b.firstChild.style.width = `${Math.min(1, Math.max(0, pct)) * 100}%`;
     if (showPace) { const pm = h('span', { class: 'pace' }); pm.style.left = `${pace * 100}%`; b.append(pm); }
     return b;
   };
-  const goLog = (id) => () => { ui.tab = 'log'; ui.logFilter = id; render(); window.scrollTo(0, 0); };
-  const row = (bk) => {
+  const rowEl = ({ name, right, small, tone, pct, green, showPace, onTap, action }) =>
+    h('div', { class: 'env' + (action ? ' has-act' : '') },
+      h(onTap ? 'button' : 'div', { class: 'env-main', onclick: onTap || null },
+        h('div', { class: 'top' }, h('span', { class: 'name', text: name }),
+          h('span', { class: 'left num' + (tone ? ' ' + tone : '') }, right, small ? h('small', { text: small }) : null)),
+        bar(pct, tone === 'over', green, showPace)),
+      action || null);
+  const bucketRow = (bk) => {
     const l = bk.line;
-    const over = bk.over > 0;
     const isBill = l.kind === 'bill';
-    let right, small;
-    if (isBill) {
-      if (!bk.paid) { right = money(l.amount); small = `due ${E.shortDate(E.billDue(S, l, c.key))}`; }
-      else if (over) { right = money(bk.over); small = 'over · from flexible'; }
-      else if (bk.left > 0) { right = 'Paid'; small = `${money(bk.left)} under`; }
-      else { right = 'Paid'; small = money(bk.spent); }
-    } else if (over) { right = money(bk.over); small = l.group === 'fixed' ? 'over · from flexible' : 'over'; }
+    let right, small, tone = '', action = null;
+    if (!live) { right = money(l.amount); small = isBill ? 'a month' : 'for the month'; }
+    else if (isBill) {
+      if (!bk.paid) {
+        const due = E.billDue(S, l, key);
+        right = money(l.amount); small = due <= t ? 'due now' : `due ${E.shortDate(due)}`;
+        if (due <= t) action = h('button', { class: 'btn line act', text: 'Paid', onclick: () => payBill(key, l) });
+      } else if (bk.over > 0) { right = money(bk.over); small = 'over · from flexible'; tone = 'over'; }
+      else { right = 'Paid'; small = bk.left > 0 ? `${money(bk.left)} under` : money(bk.spent); tone = 'ok'; }
+    } else if (bk.over > 0) { right = money(bk.over); small = l.group === 'fixed' ? 'over · from flexible' : 'over'; tone = 'over'; }
     else { right = money(bk.left); small = `left of ${money(l.amount)}`; }
-    const pct = l.amount > 0 ? bk.spent / l.amount : (bk.spent > 0 ? 1 : 0);
-    return h('button', { class: 'env', onclick: isBill ? () => payBillAmount(c.key, l) : goLog(l.id) },
-      h('div', { class: 'top' }, h('span', { class: 'name', text: l.name }),
-        h('span', { class: 'left num' + (over ? ' over' : isBill && bk.paid ? ' ok' : '') }, right, h('small', { text: small }))),
-      bar(pct, over, isBill, !isBill && l.amount > 0));
+    const pct = !live ? 0 : l.amount > 0 ? bk.spent / l.amount : (bk.spent > 0 ? 1 : 0);
+    return rowEl({ name: l.name, right, small, tone, pct, green: isBill, showPace: live && !isBill && l.amount > 0, onTap: live ? (isBill ? () => payBillAmount(key, l) : goLog(l.id)) : null, action });
   };
   const flexible = all.filter((b) => b.line.group === 'lifestyle');
   const essential = all.filter((b) => b.line.group === 'fixed' && b.line.kind === 'envelope');
   const bills = all.filter((b) => b.line.kind === 'bill');
-  const known = new Set(all.map((b) => b.line.id));
-  const orphan = E.entriesBetween(S, c.start, t).filter((e) => !known.has(e.lineId) && !E.lineById(S, e.lineId)).reduce((a, e) => a + e.amount, 0);
   const sum = (arr, f) => arr.reduce((a, b) => a + f(b), 0);
   const head = (title, arr) => {
     const left = sum(arr, (b) => b.left);
-    return h('h2', { class: 'sec' }, title, h('span', { class: 'r num' + (left < 0 ? ' neg' : ' muted'), text: left >= 0 ? `${money(left)} left` : `${money(-left)} over` }));
+    const txt = !live ? money(sum(arr, (b) => b.planned)) : left >= 0 ? `${money(left)} left` : `${money(-left)} over`;
+    return h('h2', { class: 'sec' }, title, h('span', { class: 'r num' + (live && left < 0 ? ' neg' : ' muted'), text: txt }));
   };
   const frag = [];
-  frag.push(head('Flexible', flexible), h('div', { class: 'list' }, flexible.map(row)));
-  if (orphan) frag.push(h('p', { class: 'why', style: { marginTop: '8px' }, text: `${money(orphan)} EGP logged to buckets you’ve since removed counts as flexible spending.` }));
-  if (essential.length) frag.push(head('Essentials', essential), h('div', { class: 'list' }, essential.map(row)));
-  if (bills.length) frag.push(h('h2', { class: 'sec' }, 'Bills', h('span', { class: 'r muted num', text: `${bills.filter((b) => b.paid).length} of ${bills.length} paid` })), h('div', { class: 'list' }, bills.map(row)));
-  // toward debt / savings
-  const mv = E.cycleMoneyMoves(S, c.key);
-  const moves = [];
-  if (mv.debtTarget > 0 || mv.paidFromCycle > 0) moves.push(['Toward your debt', mv.debtTarget, mv.paidFromCycle]);
-  if (mv.saveTarget > 0 || mv.savedFromCycle > 0) moves.push(['To savings', mv.saveTarget, mv.savedFromCycle]);
-  if (moves.length) {
-    frag.push(h('h2', { class: 'sec', text: 'Debt & savings' }), h('div', { class: 'list' }, moves.map(([n, plan, done]) => {
-      const left = plan - done;
-      return h('button', { class: 'env', onclick: goLog('payments') },
-        h('div', { class: 'top' }, h('span', { class: 'name', text: n }),
-          h('span', { class: 'left num' + (left <= 0 ? ' ok' : '') }, left > 0 ? money(left) : 'Done', h('small', { text: left > 0 ? `to go of ${money(plan)}` : `${money(done)} this cycle` }))),
-        bar(plan ? done / plan : 1, false, true, false));
-    })));
+  const L = (rows) => h('div', { class: 'list' + (live ? '' : ' is-preview') }, rows);
+  if (!live) {
+    const sd = E.cycleStart(S, key);
+    const days = E.daysBetween(t, sd);
+    frag.push(h('div', { class: 'preview-head' },
+      h('div', { class: 'eyebrow', text: days === 1 ? 'From tomorrow' : `From payday · in ${days} days` }),
+      h('h2', { class: 'preview-title', text: `Your first cycle starts ${E.shortDate(sd)}` }),
+      h('p', { class: 'why', style: { margin: '6px 0 0' }, text: `This is how your ${money(E.budgetFor(S, key).income)} EGP will split. Until then, what you log comes out of your money until payday.` })));
   }
+  if (flexible.length) frag.push(head('Flexible', flexible), L(flexible.map(bucketRow)));
+  if (live) {
+    const known = new Set(all.map((b) => b.line.id));
+    const orphan = E.entriesBetween(S, c.start, t).filter((e) => !known.has(e.lineId) && !E.lineById(S, e.lineId)).reduce((a, e) => a + e.amount, 0);
+    if (orphan) frag.push(h('p', { class: 'why', style: { marginTop: '8px' }, text: `${money(orphan)} EGP logged to buckets you’ve since removed counts as flexible spending.` }));
+  }
+  if (essential.length) frag.push(head('Essentials', essential), L(essential.map(bucketRow)));
+  if (bills.length) {
+    let right;
+    if (!live) right = h('span', { class: 'r muted num', text: money(sum(bills, (b) => b.planned)) });
+    else {
+      const dueNow = bills.filter((b) => !b.paid && E.billDue(S, b.line, key) <= t);
+      right = dueNow.length > 1
+        ? h('button', { class: 'r link', text: 'Mark all paid', onclick: () => payBills(key, dueNow.map((b) => b.line)) })
+        : h('span', { class: 'r muted num', text: `${bills.filter((b) => b.paid).length} of ${bills.length} paid` });
+    }
+    frag.push(h('h2', { class: 'sec' }, 'Bills', right), L(bills.map(bucketRow)));
+  }
+  // debt & savings
+  const mv = E.cycleMoneyMoves(S, key);
+  const rows = [];
+  if (!live) {
+    for (const x of E.pendingTasks(S).filter((x) => x.due <= E.cycleEnd(S, key))) rows.push(rowEl({ name: x.title, right: money(x.amount), small: `${x.from === 'savings' ? 'from savings' : ''} · ${E.shortDate(x.due)}`.replace(/^ · /, ''), pct: 0 }));
+    if (mv.debtTarget > 0) rows.push(rowEl({ name: 'Toward your debt', right: money(mv.debtTarget), small: 'for the month', pct: 0 }));
+    if (mv.saveTarget > 0) rows.push(rowEl({ name: 'To savings', right: money(mv.saveTarget), small: 'for the month', pct: 0 }));
+  } else {
+    if (mv.debtTarget > 0 || mv.paidFromCycle > 0) {
+      const left = mv.debtTarget - mv.paidFromCycle;
+      const first = E.debtsOrdered(S).find((d) => E.debtBalance(S, d) > 0);
+      rows.push(rowEl({ name: 'Toward your debt', right: left > 0 ? money(left) : 'Done', small: left > 0 ? (first ? `to ${E.lcName(first.name)}` : `to go of ${money(mv.debtTarget)}`) : `${money(mv.paidFromCycle)} this cycle`, tone: left > 0 ? '' : 'ok', pct: mv.debtTarget ? mv.paidFromCycle / mv.debtTarget : 1, green: true,
+        onTap: () => amountSheet({ title: 'Toward your debt', label: 'How much did you pay?', initial: left > 0 ? left : null, confirm: 'Save payment' }, (p) => payDebt(p, 'cycle')),
+        action: left > 0 ? h('button', { class: 'btn line act', text: 'Done', onclick: () => payDebt(left, 'cycle') }) : null }));
+    }
+    if (mv.saveTarget > 0 || mv.savedFromCycle > 0) {
+      const left = mv.saveTarget - mv.savedFromCycle;
+      rows.push(rowEl({ name: 'To savings', right: left > 0 ? money(left) : 'Done', small: left > 0 ? `to go of ${money(mv.saveTarget)}` : `${money(mv.savedFromCycle)} this cycle`, tone: left > 0 ? '' : 'ok', pct: mv.saveTarget ? mv.savedFromCycle / mv.saveTarget : 1, green: true,
+        onTap: () => amountSheet({ title: 'To savings', label: 'How much did you move?', initial: left > 0 ? left : null, confirm: 'Save' }, (p) => addSavings(p, 'cycle')),
+        action: left > 0 ? h('button', { class: 'btn line act', text: 'Done', onclick: () => addSavings(left, 'cycle') }) : null }));
+    }
+  }
+  if (rows.length) frag.push(h('h2', { class: 'sec', text: 'Debt & savings' }), L(rows));
   return frag;
-}
-
-function planStartsBlock(sf) {
-  const k = S.plan.startKey;
-  const b = E.budgetFor(S, k);
-  const mv = E.cycleMoneyMoves(S, k);
-  const bills = E.billsForCycle(S, k);
-  const tasks = E.pendingTasks(S).filter((x) => x.due <= E.cycleEnd(S, k));
-  const days = E.daysBetween(today(), sf.planStart);
-  const rows = [
-    ...tasks.map((x) => [x.title + (x.from === 'savings' ? ' (from savings)' : ''), x.amount]),
-    [`${plural(bills.length, 'bill', 'bills')}`, bills.reduce((a, x) => a + x.line.amount, 0)],
-    ['Toward your debt', mv.debtTarget],
-    ['To savings', mv.saveTarget],
-    ['Essentials for the month', b.fixedSpend],
-    ['Flexible money for the month', b.lifestyle],
-  ].filter((r) => r[1] > 0);
-  return [
-    h('h2', { class: 'sec' }, 'On payday', h('span', { class: 'r muted', text: days === 1 ? 'tomorrow' : `in ${days} days` })),
-    h('p', { class: 'why', text: `On ${E.shortDate(sf.planStart)} the plan takes over. Here’s what happens with your ${money(b.income)} EGP.` }),
-    h('div', { class: 'list' }, rows.map(([n, v]) => h('div', { class: 'row' }, h('div', { class: 'main' }, h('div', { class: 'name', text: n })), h('div', { class: 'amt num', text: money(v) })))),
-  ];
 }
 
 function roadTeaser(t) {
@@ -837,14 +811,7 @@ function planScreen() {
     const metaBits = [];
     if (l.note) metaBits.push(l.note);
     if (l.until) metaBits.push(`last payment ${E.monthShort(l.until)}`);
-    let tag = null;
-    if (withStatus && started) {
-      const rec = paid[l.id];
-      const sp = E.lineSpent(S, l, key);
-      tag = sp > l.amount ? h('span', { class: 'tag due', text: `Paid · ${money(sp - l.amount)} over` })
-        : sp > 0 ? h('span', { class: 'tag ok', text: rec ? `Paid ${E.shortDate(rec.date)}` : 'Paid' })
-        : h('span', { class: 'tag due', text: `Due ${E.shortDate(E.billDue(S, l, key))}` });
-    }
+    const tag = null;
     return h('div', { class: 'row' }, h('div', { class: 'main' }, h('div', { class: 'name', text: l.name }), metaBits.length ? h('div', { class: 'meta wrap', text: metaBits.join(' · ') }) : null),
       h('div', { style: { textAlign: 'right' } }, h('div', { class: 'amt num', text: money(l.amount) }), tag));
   };
@@ -853,7 +820,7 @@ function planScreen() {
   const bills = lines.filter((l) => l.kind === 'bill');
   const ess = lines.filter((l) => l.group === 'fixed' && l.kind === 'envelope');
   const flex = lines.filter((l) => l.group === 'lifestyle' && l.amount > 0);
-  if (bills.length) put(scr, ...sec('Fixed bills', 'Paid once each cycle. Tap Paid on Today when they go out.', bills.map((l) => lineRow(l, true)), money(b.fixedBills)));
+  if (bills.length) put(scr, ...sec('Fixed bills', 'Paid once each cycle. You mark them paid on Today.', bills.map((l) => lineRow(l)), money(b.fixedBills)));
   if (ess.length) put(scr, ...sec('Essentials', 'Spent through the month. These don’t eat into your flexible money.', ess.map((l) => lineRow(l)), money(b.fixedSpend)));
   if (flex.length) put(scr, ...sec('Flexible', 'Where the plan bends. Your daily safe-to-spend comes from here.', flex.map((l) => lineRow(l)), money(b.lifestyle)));
 
@@ -1096,30 +1063,48 @@ function openMenu() {
   openSheet('Margin', (body, api) => {
     const t = today();
     const item = (label, sub, fn, cls = '') => h('button', { class: 'row ' + cls, onclick: () => { api.close(); fn(); } }, h('div', { class: 'main' }, h('div', { class: 'name', text: label }), sub ? h('div', { class: 'meta', text: sub }) : null));
-    const list = h('div', { class: 'list' });
+    const group = (title, items) => { const its = items.filter(Boolean); return its.length ? [h('h2', { class: 'sec', text: title }), h('div', { class: 'list' }, its)] : []; };
+    const plan = [item('Edit plan', 'Income, bills, buckets, debts', openEditor)];
     if (E.planStarted(S, t)) {
       const c = E.cycleInfo(S, t);
-      if (c.daysLeft <= 7 && c.dayIndex > 1) list.append(item('Salary came early', `Start the next pay cycle today instead of ${E.shortDate(c.nextPayday)}`, () => confirmSheet('Start the next cycle today?', `Your new pay cycle will start today, ${E.shortDate(t)}. Bills and the daily share reset for the new cycle.`, 'Start new cycle', () => commit(() => { S.cycleStarts[E.nextKey(c.key)] = t; }, 'New cycle started.'))));
-      if (S.cycleStarts[c.key]) list.append(item('Undo early payday', `This cycle started on ${E.shortDate(c.start)}`, () => commit(() => { delete S.cycleStarts[c.key]; }, 'Payday moved back.')));
+      if (c.daysLeft <= 7 && c.dayIndex > 1) plan.push(item('Salary came early', `Start the next pay cycle today instead of ${E.shortDate(c.nextPayday)}`, () => confirmSheet('Start the next cycle today?', `Your new pay cycle will start today, ${E.shortDate(t)}. Bills and the daily share reset for the new cycle.`, 'Start new cycle', () => commit(() => { S.cycleStarts[E.nextKey(c.key)] = t; }, 'New cycle started.'))));
+      if (S.cycleStarts[c.key]) plan.push(item('Undo early payday', `This cycle started on ${E.shortDate(c.start)}`, () => commit(() => { delete S.cycleStarts[c.key]; }, 'Payday moved back.')));
     }
-    list.append(
-      item('Edit plan', 'Income, bills, buckets, debts', openEditor),
+    plan.push(item('Playful reactions', S.meta.reactions ? 'On — tap to turn off' : 'Off — tap to turn on', () => commit(() => { S.meta.reactions = !S.meta.reactions; }, S.meta.reactions ? 'Reactions off.' : 'Reactions on. Yalla.', { undo: false })));
+    plan.push(item('Setup tips', 'Evening reminder · Home Screen', openSetupTips));
+    const snap = readSnapshot();
+    const data = [
       item('Back up', S.meta.lastBackup ? `Last backup ${E.shortDate(E.todayISO(new Date(S.meta.lastBackup)))}` : 'Save a copy to Files', exportBackup),
       item('Restore from a backup', 'Replace what’s on this phone', importBackup),
-      item('Evening reminder', 'A nudge at 9pm to log the day', openReminderHelp),
-      item('Playful reactions', S.meta.reactions ? 'On — tap to turn off' : 'Off — tap to turn on', () => commit(() => { S.meta.reactions = !S.meta.reactions; }, S.meta.reactions ? 'Reactions off.' : 'Reactions on. Yalla.', { undo: false })),
-    );
-    if (!isStandalone()) list.append(item('Add to Home Screen', 'Use Margin like an app', openInstallHelp));
-    const snap = readSnapshot();
-    if (snap) list.append(item('Bring back what I had', `From before the reset on ${E.shortDate(E.todayISO(new Date(snap.at)))}`, restoreSnapshot));
-    put(body, list, h('h2', { class: 'sec', text: 'Start over' }));
-    const list2 = h('div', { class: 'list' },
+      snap ? item('Bring back what I had', `From before the reset on ${E.shortDate(E.todayISO(new Date(snap.at)))}`, restoreSnapshot) : null,
+    ];
+    const over = [
       item('Start fresh from today', 'Keep the plan, set today’s real balances, clear the history', openFreshStart),
       item('Clear spending log', 'Delete logged spending, keep payments and the plan', clearSpending),
-      item('Erase everything', 'Remove the plan and all data from this phone', eraseAll, 'danger'));
-    put(body, list2, h('p', { class: 'why', style: { marginTop: '16px', textAlign: 'center' }, text: `Margin ${VERSION} · Your data stays on this phone.` }));
-    return;
-    put(body, list, h('p', { class: 'why', style: { marginTop: '16px', textAlign: 'center' }, text: `Margin ${VERSION} · Your data stays on this phone.` }));
+      item('Erase everything', 'Remove the plan and all data from this phone', eraseAll, 'danger'),
+    ];
+    put(body, ...group('Your plan', plan), ...group('Your data', data), ...group('Start over', over),
+      h('p', { class: 'why', style: { marginTop: '16px', textAlign: 'center' }, text: `Margin ${VERSION} · Your data stays on this phone.` }));
+  });
+}
+
+function openSetupTips() {
+  openSheet('Setup tips', (body) => {
+    put(body,
+      h('h2', { class: 'sec', text: 'Evening reminder' }),
+      h('ol', { class: 'steps' },
+        h('li', { text: 'Open Reminders and tap New Reminder: “Log today in Margin”.' }),
+        h('li', { text: 'Tap the info button, turn on Date and Time, set 9:00 PM.' }),
+        h('li', { text: 'Set Repeat to Daily.' })),
+      h('p', { class: 'why', text: 'After 6pm, Today asks “Anything you spent today?”' }),
+      h('h2', { class: 'sec', text: 'Home Screen' }),
+      isStandalone() ? h('p', { class: 'why', text: 'You’re already using Margin from your Home Screen.' }) :
+        h('ol', { class: 'steps' },
+          h('li', {}, 'In Safari, tap the Share button ', icon.share(), '.'),
+          h('li', { text: 'Tap “Add to Home Screen”, then Add.' }),
+          h('li', { text: 'Open Margin from your Home Screen from now on.' })),
+      !isStandalone() && S.plan && S.entries.length ? h('p', { class: 'why', text: 'The Home Screen app keeps its own storage. Back up here first, then use Restore from a backup in the app.' }) : null,
+      !isStandalone() && S.plan && S.entries.length ? h('button', { class: 'btn ink wide', style: { marginTop: '10px' }, text: 'Back up now', onclick: exportBackup }) : null);
   });
 }
 
