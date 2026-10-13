@@ -2,7 +2,7 @@ import * as E from './engine.js';
 
 const KEY = 'margin.state';
 const PREV = 'margin.prev';
-const VERSION = '1.4.0';
+const VERSION = '1.4.1';
 
 let S = null;               // app state
 let bootError = null;       // { kind, raw }
@@ -650,7 +650,8 @@ function openAdd() {
       } else {
         const after = E.safeToSpend(withEntry({ id: 'tmp', date: st.date, amount: p, lineId: 'other', note: '', src: 'quick', ts: 0 }), st.date);
         const red = after.leftToday < 0;
-        impact = h('div', { class: 'impact' + (red ? ' red' : '') }, `${shareLabel(st.date)} `, h('b', { class: 'num', text: `${money(before.leftToday)} → ${money(after.leftToday)}` }), red ? ' · E5th territory' : null);
+        impact = h('div', { class: 'impact' + (red ? ' red' : '') }, `${shareLabel(st.date)} `, h('b', { class: 'num', text: `${money(before.leftToday)} → ${money(after.leftToday)}` }),
+          red ? h('div', { class: 'impact-sub', text: `Over ${st.date === today() ? 'today’s' : 'that day’s'} share by ${money(-after.leftToday)}` }) : null);
       }
     }
     put(body, impact || h('div', { class: 'impact' }));

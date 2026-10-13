@@ -399,3 +399,4 @@ h2.sec .r.link { letter-spacing: 0; text-transform: none; font-size: 13.5px; pad
 .row.pos-row .name { color: var(--green); }
 .row.danger-row .name { color: var(--red); }
 @media (max-height: 720px) { .bk { min-height: 54px; } .grid6 { margin: 10px 0 4px; } .usual { height: 36px; } }
+.impact-sub { font-size: 13px; margin-top: 1px; }
