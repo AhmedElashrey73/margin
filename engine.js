@@ -389,10 +389,9 @@ export function spendReaction(before, after, entry, today) {
     const now = line.amount - lineSpent(after, line, key);
     if (was >= 0 && now < 0 && !fx.buckets[`${key}:${line.id}`]) return { kind: 'bucket', key: `${key}:${line.id}`, line, over: -now, level: overLevel(safeToSpend(after, today).leftToday) };
   }
+  // E5th: every flexible spend that leaves today's share below zero — including when already over.
   const a = safeToSpend(after, today);
-  const level = overLevel(a.leftToday);
-  const shown = fx.overDay === today ? fx.overLevel || 0 : 0;
-  if (level > shown) return { kind: 'over', level, over: -a.leftToday, tomorrow: safeToSpend(after, addDays(today, 1)).daily };
+  if (a.leftToday < 0) return { kind: 'over', level: overLevel(a.leftToday), over: -a.leftToday, tomorrow: safeToSpend(after, addDays(today, 1)).daily };
   return null;
 }
 // Debts that went from owing to cleared between two states.

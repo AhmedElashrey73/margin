@@ -2,7 +2,7 @@ import * as E from './engine.js';
 
 const KEY = 'margin.state';
 const PREV = 'margin.prev';
-const VERSION = '1.4.1';
+const VERSION = '1.4.2';
 
 let S = null;               // app state
 let bootError = null;       // { kind, raw }
