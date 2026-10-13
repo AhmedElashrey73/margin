@@ -2,7 +2,7 @@ import * as E from './engine.js';
 
 const KEY = 'margin.state';
 const PREV = 'margin.prev';
-const VERSION = '1.3.1';
+const VERSION = '1.4.0';
 
 let S = null;               // app state
 let bootError = null;       // { kind, raw }
@@ -111,7 +111,7 @@ function toast(msg, onUndo = null) {
   const el = h('div', { class: 'toast', role: 'status' }, h('div', { class: 'msg', text: msg }),
     onUndo && h('button', { text: 'Undo', onclick: () => { root.replaceChildren(); clearTimeout(toastTimer); onUndo(); } }));
   root.append(el);
-  toastTimer = setTimeout(() => root.replaceChildren(), onUndo ? 6000 : 3500);
+  toastTimer = setTimeout(() => root.replaceChildren(), onUndo ? 4000 : 3000);
 }
 
 /* ---------------- sheets ---------------- */
@@ -122,7 +122,8 @@ function openSheet(title, build, { onClose } = {}) {
   const root = document.getElementById('sheet-root');
   const backdrop = h('div', { class: 'backdrop' });
   const body = h('div', { class: 'body' });
-  const head = h('div', { class: 'head' }, h('h3', { text: title }), h('button', { class: 'btn quiet', text: 'Close', onclick: () => close() }));
+  const actionsEl = h('div', { class: 'head-acts' });
+  const head = h('div', { class: 'head' }, h('h3', { text: title }), h('div', { class: 'head-r' }, actionsEl, h('button', { class: 'btn quiet', text: 'Close', onclick: () => close() })));
   const grab = h('div', { class: 'grab', 'aria-hidden': 'true' }, h('i'));
   const sheet = h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': title }, grab, head, body);
   let closed = false;
@@ -143,7 +144,7 @@ function openSheet(title, build, { onClose } = {}) {
   grab.addEventListener('touchstart', (e) => { y0 = e.touches[0].clientY; dy = 0; }, { passive: true });
   grab.addEventListener('touchmove', (e) => { if (y0 == null) return; dy = Math.max(0, e.touches[0].clientY - y0); sheet.style.transform = `translateY(${dy}px)`; }, { passive: true });
   grab.addEventListener('touchend', () => { if (dy > 90) close(); else sheet.style.transform = ''; y0 = null; });
-  const api = { close, body, setTitle: (t) => { head.firstChild.textContent = t; }, refresh: () => { body.replaceChildren(); build(body, api); } };
+  const api = { close, body, setTitle: (t) => { head.firstChild.textContent = t; }, setActions: (els) => { actionsEl.replaceChildren(...(els || [])); }, refresh: () => { const y = body.scrollTop; body.replaceChildren(); build(body, api); body.scrollTop = y; } };
   build(body, api);
   root.append(backdrop, sheet);
   currentSheet = api;
@@ -604,159 +605,219 @@ function displayRaw(raw) {
   return d !== undefined ? `${ws}.${d}` : ws;
 }
 
-function openAdd(existing = null, preset = {}) {
+/* ================= ADD SPENDING (v1.4) =================
+   Type an amount → see what it does to today's share → tap the bucket it went to (that saves it). */
+const rankLine = (l) => (l.id === 'other' ? 2 : l.group === 'lifestyle' ? 0 : 1);
+function shareLabel(date) { const t = today(); return date === t ? 'Today’s share' : date === E.addDays(t, -1) ? 'Yesterday’s share' : `${E.shortDate(date)} share`; }
+function withEntry(entry) { return { ...S, entries: [...S.entries, entry] }; }
+
+function openAdd() {
   const t = today();
-  const st = {
-    raw: existing ? rawFromP(existing.amount) : '',
-    lineId: existing ? existing.lineId : preset.lineId || null,
-    manual: !!existing || !!preset.lineId,
-    note: existing ? existing.note : '',
-    date: existing ? existing.date : t,
-    refund: existing ? existing.amount < 0 : false,
-    src: existing ? existing.src : 'quick',
-    mode: 'pad', confirmBig: false, confirmDelete: false, busy: false, smsText: '', smsErr: '', smsNote: '',
-  };
-  openSheet(existing ? 'Edit spending' : 'Add spending', (body, api) => {
+  const st = { raw: '', date: t, note: '', panel: null, confirmId: null, busy: false, mode: 'pad', smsText: '', smsErr: '', sms: null };
+  let confirmTimer = null;
+  openSheet('Add spending', (body, api) => {
+    api.setTitle(st.mode === 'sms' ? 'Paste bank SMS' : 'Add spending');
+    api.setActions(st.mode === 'sms' ? [] : [h('button', { class: 'smsbtn', text: 'Paste SMS', onclick: () => { st.mode = 'sms'; st.panel = null; api.refresh(); } })]);
     if (st.mode === 'sms') return buildSms(body, api);
-    const key = E.planStarted(S, st.date) ? E.cycleKeyFor(S, st.date) : S.plan.startKey;
-    const startedAt = E.planStarted(S, st.date);
-    const env = E.activeLines(S, key).filter((l) => l.kind === 'envelope' && (l.amount > 0 || l.id === 'other'));
-    const rank = (l) => (l.id === 'other' ? 2 : l.group === 'lifestyle' ? 0 : 1);
-    env.sort((a, b) => rank(a) - rank(b));
-    const billLines = E.activeLines(S, key).filter((l) => l.kind === 'bill');
-    const debtChip = !existing && startedAt && E.totalDebt(S) > 0 ? { id: '__debt', name: 'Toward your debt', amount: 0, kind: 'debt' } : null;
-    const all = [...env];
-    if (st.lineId && !env.some((l) => l.id === st.lineId) && !billLines.some((l) => l.id === st.lineId)) { const l = E.lineById(S, st.lineId); if (l) all.push(l); }
-    const firstMore = all.length;
-    all.push(...billLines);
-    if (debtChip) all.push(debtChip);
-    const cs = startedAt ? E.cycleInfo(S, st.date) : null;
+    const p = E.parseAmount(st.raw || '0') || 0;
+    const started = E.planStarted(S, st.date);
+    const key = started ? E.cycleKeyFor(S, st.date) : S.plan.startKey;
+    const lines = E.activeLines(S, key).filter((l) => l.kind === 'envelope' && (l.amount > 0 || l.id === 'other')).sort((a, b) => rankLine(a) - rankLine(b));
+    const cs = started ? E.cycleInfo(S, st.date) : null;
     const spent = cs ? E.spentByLine(S, cs.start, cs.end) : {};
-    const mvNow = cs ? E.cycleMoneyMoves(S, cs.key) : null;
-    const amt = h('div', { class: 'v num' + (st.raw ? '' : ' placeholder') + (st.refund ? ' refund' : ''), text: (st.refund && st.raw ? '+' : '') + displayRaw(st.raw) });
-    const warn = h('div', { class: 'warnline' });
-    const save = h('button', { class: 'btn ink wide', text: existing ? 'Save changes' : 'Save' });
-    const refreshState = () => {
-      amt.textContent = (st.refund && st.raw ? '+' : '') + displayRaw(st.raw);
-      amt.className = 'v num' + (st.raw ? '' : ' placeholder') + (st.refund ? ' refund' : '');
-      const p = E.parseAmount(st.raw || '0');
-      save.disabled = !(p > 0 && st.lineId);
-      if (!st.confirmBig) warn.textContent = '';
-    };
-    const chipFor = (l) => {
-      let sm = null;
-      if (l.kind === 'debt') sm = mvNow && mvNow.debtRemaining > 0 ? money(mvNow.debtRemaining) : null;
-      else if (l.kind === 'bill') sm = cs ? (E.lineSpent(S, l, cs.key) > 0 ? 'paid' : money(l.amount)) : null;
-      else if (cs && l.amount > 0) { const left = l.amount - (spent[l.id] || 0); sm = left >= 0 ? money(left) : `−${money(-left)}`; }
-      return h('button', { class: 'bucket' + (st.lineId === l.id ? ' on' : ''), role: 'radio', 'aria-checked': st.lineId === l.id ? 'true' : 'false', onclick: () => { st.lineId = l.id; st.manual = true; st.confirmBig = false; if (l.kind === 'debt') st.refund = false; api.refresh(); } },
-        l.name, sm ? h('span', { class: 'sm num', text: sm }) : null);
-    };
-    const chips = h('div', { role: 'radiogroup', 'aria-label': 'Bucket' },
-      h('div', { class: 'buckets' }, all.slice(0, firstMore).map(chipFor)),
-      all.length > firstMore ? h('div', { class: 'chip-label', text: 'Bills & debt' }) : null,
-      all.length > firstMore ? h('div', { class: 'buckets more' }, all.slice(firstMore).map(chipFor)) : null);
-    const note = h('input', { class: 'note-input', type: 'text', placeholder: 'Where? (optional)', value: st.note, maxlength: '60', autocomplete: 'off', autocapitalize: 'words', enterkeyhint: 'done', 'aria-label': 'Note' });
-    note.addEventListener('input', () => {
-      st.note = note.value;
-      if (!st.manual) { const g = E.guessLine(S, st.note); if (g && g !== st.lineId) { st.lineId = g; chips.querySelectorAll('.bucket').forEach((b, i) => { const on = all[i].id === g; b.classList.toggle('on', on); b.setAttribute('aria-checked', on ? 'true' : 'false'); }); refreshState(); } }
-    });
-    note.addEventListener('keydown', (e) => { if (e.key === 'Enter') note.blur(); });
+    const guess = st.note ? E.guessLine(S, st.note) : null;
 
-    // date pill with native picker underneath
-    const dateLabel = st.date === t ? 'Today' : st.date === E.addDays(t, -1) ? 'Yesterday' : E.shortDate(st.date);
-    const dateInput = h('input', { type: 'date', value: st.date, max: t, min: E.addDays(t, -400), 'aria-label': 'Date' });
-    Object.assign(dateInput.style, { position: 'absolute', inset: '0', opacity: '0', width: '100%', height: '100%' });
-    dateInput.addEventListener('change', () => { if (E.isValidISO(dateInput.value) && dateInput.value <= t) { st.date = dateInput.value; api.refresh(); } });
-    const datePill = h('label', { class: 'pill', style: { position: 'relative' } }, dateLabel, dateInput);
-    const refundPill = st.lineId === '__debt' ? null : h('button', { class: 'pill' + (st.refund ? ' on' : ''), 'aria-pressed': st.refund ? 'true' : 'false', text: 'Money back', onclick: () => { st.refund = !st.refund; api.refresh(); } });
-    const smsPill = h('button', { class: 'pill', text: 'Paste bank SMS', onclick: () => { st.mode = 'sms'; api.refresh(); } });
+    // usuals: only on a fresh, today entry
+    if (!st.raw && st.date === t && !st.note) {
+      const us = E.usuals(S, t, hourNow());
+      if (us.length) put(body, h('div', { class: 'add-lbl', text: 'Your usuals' }), h('div', { class: 'usuals' }, us.map((u) => {
+        const l = E.lineById(S, u.lineId);
+        return h('button', { class: 'usual', 'aria-label': `Log ${u.note || l.name} ${money(u.amount)} to ${l.name}`, onclick: () => save(l, u.amount, { note: u.note }) },
+          u.note || l.name, h('b', { class: 'num', text: money(u.amount) }));
+      })));
+    }
 
+    // amount + live impact
+    put(body, h('div', { class: 'amount-display' },
+      h('div', { class: 'v num' + (st.raw ? '' : ' placeholder'), text: displayRaw(st.raw) }), h('div', { class: 'c', text: 'EGP' })));
+    let impact = null;
+    if (E.tracking(S, st.date)) {
+      const before = E.safeToSpend(S, st.date);
+      if (!p) {
+        impact = before.leftToday >= 0
+          ? h('div', { class: 'impact' }, st.date === t ? 'Today you can spend ' : 'That day you could spend ', h('b', { class: 'num', text: money(before.leftToday) }))
+          : h('div', { class: 'impact red' }, st.date === t ? 'Today you’re over by ' : 'That day was over by ', h('b', { class: 'num', text: money(-before.leftToday) }));
+      } else {
+        const after = E.safeToSpend(withEntry({ id: 'tmp', date: st.date, amount: p, lineId: 'other', note: '', src: 'quick', ts: 0 }), st.date);
+        const red = after.leftToday < 0;
+        impact = h('div', { class: 'impact' + (red ? ' red' : '') }, `${shareLabel(st.date)} `, h('b', { class: 'num', text: `${money(before.leftToday)} → ${money(after.leftToday)}` }), red ? ' · E5th territory' : null);
+      }
+    }
+    put(body, impact || h('div', { class: 'impact' }));
+
+    // day + note
+    const dayTxt = st.date === t ? 'Today' : st.date === E.addDays(t, -1) ? 'Yesterday' : E.shortDate(st.date);
+    put(body, h('div', { class: 'opts' },
+      h('button', { class: 'opt' + (st.panel === 'day' ? ' on' : st.date !== t ? ' set' : ''), 'aria-expanded': st.panel === 'day' ? 'true' : 'false', onclick: () => { st.panel = st.panel === 'day' ? null : 'day'; api.refresh(); } }, `${dayTxt} ▾`),
+      h('button', { class: 'opt' + (st.panel === 'note' ? ' on' : st.note ? ' set' : ''), 'aria-expanded': st.panel === 'note' ? 'true' : 'false', onclick: () => { st.panel = st.panel === 'note' ? null : 'note'; api.refresh(); } }, st.note ? st.note : 'Add a note')));
+    if (st.panel === 'day') {
+      const pick = h('input', { type: 'date', value: st.date, max: t, min: E.addDays(t, -400), 'aria-label': 'Pick a date' });
+      Object.assign(pick.style, { position: 'absolute', inset: '0', opacity: '0', width: '100%', height: '100%' });
+      pick.addEventListener('change', () => { if (E.isValidISO(pick.value) && pick.value <= t) { st.date = pick.value; st.panel = null; api.refresh(); } });
+      const d = (iso, label) => h('button', { class: 'opt' + (st.date === iso ? ' on' : ''), onclick: () => { st.date = iso; st.panel = null; api.refresh(); } }, label);
+      put(body, h('div', { class: 'daypick' }, d(t, 'Today'), d(E.addDays(t, -1), 'Yesterday'),
+        h('label', { class: 'opt' + (st.date < E.addDays(t, -1) ? ' on' : ''), style: { position: 'relative' } }, st.date < E.addDays(t, -1) ? E.shortDate(st.date) : 'Pick a date', pick)));
+    }
+    if (st.panel === 'note') {
+      const inp = h('input', { class: 'note-input', type: 'text', placeholder: 'Where? e.g. Talabat', value: st.note, maxlength: '60', autocomplete: 'off', autocapitalize: 'words', enterkeyhint: 'done', 'aria-label': 'Note' });
+      inp.addEventListener('input', () => { st.note = inp.value; });
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { st.panel = null; api.refresh(); } });
+      inp.addEventListener('blur', () => { setTimeout(() => { if (st.panel === 'note' && document.activeElement !== inp) { st.panel = null; api.refresh(); } }, 150); });
+      const sug = E.recentNotes(S, null, 3).filter((n) => n.toLowerCase() !== st.note.trim().toLowerCase());
+      put(body, inp, sug.length ? h('div', { class: 'places' }, sug.map((n) => h('button', { class: 'place', onclick: () => { st.note = n; st.panel = null; api.refresh(); } }, n))) : null);
+      setTimeout(() => inp.focus(), 60);
+    }
+
+    // buckets: tap = save
+    put(body, h('div', { class: 'grid6', role: 'group', 'aria-label': 'Where did it go? Tap to save' }, lines.map((l) => {
+      const left = l.amount - (spent[l.id] || 0);
+      let sub, cls = '';
+      if (!cs) sub = '';
+      else if (l.amount === 0) sub = 'no limit';
+      else if (p && left - p < 0) { sub = `${money(p - left)} over after`; cls = ' warn'; }
+      else if (p && guess === l.id) sub = `${money(left)} → ${money(left - p)}`;
+      else sub = left >= 0 ? `${money(left)} left` : `${money(-left)} over`;
+      if (st.confirmId === l.id) { sub = 'Tap again to save'; cls = ' confirm'; }
+      const b = h('button', { class: 'bk' + cls + (!p ? ' dim' : '') + (guess === l.id && p ? ' sugg' : ''), 'aria-disabled': p ? 'false' : 'true', onclick: () => tapBucket(l, p) },
+        h('span', { class: 'n', text: l.name }), h('span', { class: 'l num', text: sub }));
+      if (cs && l.amount > 0) { const m = h('span', { class: 'm' }, h('i')); m.firstChild.style.width = `${Math.min(100, Math.max(0, ((l.amount - left + p) / l.amount) * 100))}%`; b.append(m); }
+      return b;
+    })), h('div', { class: 'hint', text: p ? 'Tap a bucket to save' : 'Type an amount, then tap where it went' }));
+
+    // keypad
     const press = (k) => {
       let r = st.raw;
       if (k === 'del') r = r.slice(0, -1);
       else if (k === '.') { if (r.includes('.')) return; r = (r || '0') + '.'; }
-      else {
-        if (r.includes('.')) { if (r.split('.')[1].length >= 2) return; r += k; }
-        else { if (r === '0') r = k; else { if (r.replace('.', '').length >= 8) return; r += k; } }
-      }
-      st.raw = r; st.confirmBig = false; refreshState();
+      else if (r.includes('.')) { if (r.split('.')[1].length >= 2) return; r += k; }
+      else if (r === '0') r = k;
+      else { if (r.length >= 8) return; r += k; }
+      st.raw = r; st.confirmId = null; if (st.panel === 'note') st.panel = null; api.refresh();
     };
-    const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'del'].map((k) =>
-      h('button', { class: 'key num', 'aria-label': k === 'del' ? 'Delete digit' : k === '.' ? 'Decimal point' : k, onclick: () => press(k) }, k === 'del' ? icon.back() : k));
+    put(body, h('div', { class: 'keypad' }, ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'del'].map((k) =>
+      h('button', { class: 'key num', 'aria-label': k === 'del' ? 'Delete digit' : k === '.' ? 'Decimal point' : k, onclick: () => press(k) }, k === 'del' ? icon.back() : k))));
 
-    save.addEventListener('click', () => {
+    function tapBucket(l, amount) {
+      if (!amount) { const v = body.querySelector('.amount-display .v'); if (v) { v.classList.remove('nudge'); void v.offsetWidth; v.classList.add('nudge'); } return; }
+      const big = amount > E.toP(20000) || (l.amount > 0 && amount > l.amount * 2 && amount > E.toP(1000));
+      if (big && st.confirmId !== l.id) { st.confirmId = l.id; clearTimeout(confirmTimer); confirmTimer = setTimeout(() => { if (st.confirmId === l.id) { st.confirmId = null; api.refresh(); } }, 3000); api.refresh(); return; }
+      save(l, amount);
+    }
+    function save(l, amount, extra = {}) {
       if (st.busy) return;
-      const p = E.parseAmount(st.raw);
-      if (!(p > 0) || !st.lineId) return;
-      if (st.lineId === '__debt') { st.busy = true; api.close(); payDebt(p, 'cycle'); return; }
-      const line = E.lineById(S, st.lineId);
-      const big = p > E.toP(20000) || (line && line.amount > 0 && p > line.amount * 2 && p > E.toP(1000));
-      if (big && !st.confirmBig && !st.refund) { st.confirmBig = true; warn.textContent = `${money(p)} EGP is a big one. Tap Save again if that’s right.`; return; }
-      st.busy = true;
-      const entry = { id: existing ? existing.id : E.uid(), date: st.date, amount: st.refund ? -p : p, lineId: st.lineId, note: st.note.trim().slice(0, 60), src: st.src, ts: existing ? existing.ts : Date.now() };
+      st.busy = true; clearTimeout(confirmTimer);
+      const entry = { id: E.uid(), date: st.date, amount: extra.refund ? -amount : amount, lineId: l.id, note: String(extra.note != null ? extra.note : st.note).trim().slice(0, 60), src: extra.src || 'quick', ts: Date.now() };
       api.close();
       commit(() => {
-        if (existing) { const i = S.entries.findIndex((e) => e.id === existing.id); if (i >= 0) S.entries[i] = entry; else S.entries.push(entry); }
-        else S.entries.push(entry);
+        S.entries.push(entry);
         const mk = E.merchantKey(entry.note);
-        if (mk) S.merchants[mk] = entry.lineId;
-      }, existing ? 'Changes saved.' : `${money(p)} EGP ${st.refund ? 'back to' : 'to'} ${line ? E.lcName(line.name) : 'other'}.`, {
-        react: existing ? null : (prev) => {
+        if (mk && entry.amount > 0) S.merchants[mk] = entry.lineId;
+      }, extra.refund ? `${money(amount)} EGP back to ${l.name}.` : `${money(amount)} EGP to ${l.name}.`, {
+        react: (prev) => {
           const r = E.spendReaction(prev, S, entry, today());
           if (!r) return null;
           if (r.kind === 'bucket') S.meta.fx.buckets[r.key] = 1;
           const prevLevel = S.meta.fx.overDay === today() ? S.meta.fx.overLevel || 0 : 0;
-          S.meta.fx.overDay = today();
-          S.meta.fx.overLevel = Math.max(prevLevel, r.level || 0); // next E5th only at the next 500 EGP level
+          S.meta.fx.overDay = today(); S.meta.fx.overLevel = Math.max(prevLevel, r.level || 0);
           return r;
         },
       });
-    });
-
-    put(body, 
-      h('div', { class: 'amount-display' }, amt, h('div', { class: 'c', text: st.refund ? 'EGP BACK' : 'EGP' })),
-      st.smsNote ? h('p', { class: 'why', style: { textAlign: 'center', margin: '6px 0 0' }, text: st.smsNote }) : null,
-      chips,
-      note,
-      h('div', { class: 'metarow' }, datePill, refundPill, existing ? null : smsPill),
-      h('div', { class: 'keypad' }, keys),
-      warn,
-      h('div', { class: 'save-wrap' }, save),
-      existing ? h('button', { class: 'btn danger wide', style: { marginTop: '6px' }, text: st.confirmDelete ? 'Tap again to delete' : 'Delete', onclick: () => {
-        if (!st.confirmDelete) { st.confirmDelete = true; api.refresh(); return; }
-        api.close();
-        commit(() => { S.entries = S.entries.filter((e) => e.id !== existing.id); }, 'Deleted.');
-      } }) : null,
-    );
-    refreshState();
+    }
+    function buildSms() {
+      const ta = h('textarea', { placeholder: 'Long-press the bank message, Copy, then tap Paste.', 'aria-label': 'Bank message' });
+      ta.value = st.smsText;
+      ta.addEventListener('input', () => { st.smsText = ta.value; st.sms = null; });
+      const read = () => {
+        const r = E.parseSMS(st.smsText);
+        if (!r) { st.smsErr = 'Couldn’t find an amount in that message. Go back and type it instead.'; st.sms = null; api.refresh(); return; }
+        st.smsErr = ''; st.sms = r; api.refresh();
+      };
+      const canRead = navigator.clipboard && typeof navigator.clipboard.readText === 'function';
+      put(body, h('p', { class: 'why', style: { marginTop: '4px' }, text: 'Copy the message from your bank, then tap Paste. Margin reads it on your phone — nothing is sent anywhere.' }),
+        h('div', { class: 'field', style: { marginTop: '10px' } }, ta), h('div', { class: 'errmsg', text: st.smsErr }),
+        h('div', { style: { display: 'flex', gap: '8px' } },
+          canRead ? h('button', { class: 'btn line', text: 'Paste', onclick: async () => { try { const x = await navigator.clipboard.readText(); if (x) { st.smsText = x; read(); } } catch { ta.focus(); } } }) : null,
+          h('button', { class: 'btn ink', style: { flex: '1' }, text: 'Read it', onclick: read })));
+      if (st.sms) {
+        const r = st.sms;
+        const guessL = E.guessLine(S, r.merchant);
+        const started = E.planStarted(S, t);
+        const key = started ? E.cycleKeyFor(S, t) : S.plan.startKey;
+        const ls = E.activeLines(S, key).filter((l) => l.kind === 'envelope' && (l.amount > 0 || l.id === 'other')).sort((a, b) => rankLine(a) - rankLine(b));
+        put(body, h('div', { class: 'found' },
+          h('div', { class: 'r' }, h('span', { text: r.isCredit ? 'Money in' : 'Amount' }), h('span', { class: 'v num' + (r.isCredit ? ' pos' : ''), text: (r.isCredit ? '+' : '') + money(r.amount) })),
+          r.merchant ? h('div', { class: 'r' }, h('span', { text: 'Where' }), h('span', { class: 'v', text: r.merchant })) : null),
+          r.isCredit ? h('p', { class: 'why', style: { marginTop: '8px' }, text: 'This looks like money coming back to you. It will be saved as money back.' }) : null,
+          h('div', { class: 'add-lbl', style: { textAlign: 'center', marginTop: '16px' }, text: r.isCredit ? 'Back to which bucket?' : 'Where did it go?' }),
+          h('div', { class: 'grid6' }, ls.map((l) => h('button', { class: 'bk' + (guessL === l.id ? ' sugg' : ''), onclick: () => save(l, r.amount, { note: r.merchant, src: 'sms', refund: r.isCredit }) },
+            h('span', { class: 'n', text: l.name }), h('span', { class: 'l', text: guessL === l.id ? 'usual for this place' : '' })))));
+      }
+      put(body, h('button', { class: 'btn quiet wide', style: { marginTop: '10px' }, text: 'Back to keypad', onclick: () => { st.mode = 'pad'; api.refresh(); } }));
+      if (!st.smsText) setTimeout(() => ta.focus(), 250);
+    }
   });
+}
 
-  function buildSms(body, api) {
-    api.setTitle('Paste bank SMS');
-    const ta = h('textarea', { placeholder: 'Long-press the bank message, Copy, then paste it here.', 'aria-label': 'Bank message' });
-    ta.value = st.smsText;
-    ta.addEventListener('input', () => { st.smsText = ta.value; });
-    const err = h('div', { class: 'errmsg', text: st.smsErr });
-    const read = () => {
-      const r = E.parseSMS(st.smsText);
-      if (!r) { st.smsErr = 'Couldn’t find an amount in that message. Type it in instead.'; api.refresh(); return; }
-      st.raw = rawFromP(r.amount); st.refund = r.isCredit; st.note = r.merchant || st.note; st.src = 'sms';
-      const g = E.guessLine(S, r.merchant);
-      if (g && !st.manual) st.lineId = g;
-      st.smsNote = `Read from the message${r.merchant ? ` — ${r.merchant}` : ''}. Check it, pick a bucket, save.`;
-      st.smsErr = ''; st.mode = 'pad'; api.setTitle('Add spending'); api.refresh();
-    };
-    const canRead = navigator.clipboard && typeof navigator.clipboard.readText === 'function';
-    put(body, 
-      h('p', { class: 'why', style: { marginTop: '6px' }, text: 'Margin reads the amount and the shop. Nothing leaves your phone.' }),
-      h('div', { class: 'field' }, ta), err,
-      h('div', { class: 'acts', style: { display: 'flex', gap: '8px', marginTop: '12px' } },
-        canRead ? h('button', { class: 'btn line', text: 'Paste', onclick: async () => { try { const x = await navigator.clipboard.readText(); if (x) { st.smsText = x; ta.value = x; read(); } } catch { ta.focus(); } } }) : null,
-        h('button', { class: 'btn ink', style: { flex: '1' }, text: 'Read message', onclick: read })),
-      h('button', { class: 'btn quiet wide', style: { marginTop: '8px' }, text: 'Back to keypad', onclick: () => { st.mode = 'pad'; api.setTitle(existing ? 'Edit spending' : 'Add spending'); api.refresh(); } }),
-    );
-    setTimeout(() => ta.focus(), 250);
-  }
+/* ---------------- edit a logged entry ---------------- */
+function openEntry(entry) {
+  const find = () => S.entries.find((e) => e.id === entry.id);
+  let confirmDelete = false;
+  openSheet('Entry', (body, api) => {
+    const e = find();
+    if (!e) { api.close(); return; }
+    const l = E.lineById(S, e.lineId);
+    api.setTitle(`${l ? l.name : 'Other'}${e.note ? ' · ' + e.note : ''}`);
+    const refund = e.amount < 0;
+    const update = (patch, msg) => commit(() => { const x = S.entries.find((y) => y.id === e.id); if (x) Object.assign(x, patch); }, msg);
+    const row = (label, value, fn, cls = '') => h('button', { class: 'row ' + cls, onclick: fn }, h('div', { class: 'main' }, h('div', { class: 'name', text: label })), value != null ? h('div', { class: 'tag', text: value }) : null, h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
+    const dateInput = h('input', { type: 'date', value: e.date, max: today(), min: E.addDays(today(), -400), 'aria-label': 'Change day' });
+    Object.assign(dateInput.style, { position: 'absolute', inset: '0', opacity: '0', width: '100%', height: '100%' });
+    dateInput.addEventListener('change', () => { if (E.isValidISO(dateInput.value) && dateInput.value <= today()) { update({ date: dateInput.value }, 'Day changed.'); api.refresh(); } });
+    const dayRow = h('label', { class: 'row', style: { position: 'relative' } }, h('div', { class: 'main' }, h('div', { class: 'name', text: 'Change day' })), h('div', { class: 'tag', text: E.longDate(e.date) }), h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }), dateInput);
+    put(body,
+      h('div', { class: 'amount-display' }, h('div', { class: 'v num' + (refund ? ' refund' : ''), text: (refund ? '+' : '') + money(Math.abs(e.amount)) }), h('div', { class: 'c', text: refund ? 'EGP BACK' : 'EGP' })),
+      h('div', { class: 'list', style: { marginTop: '16px' } },
+        row('Change amount', null, () => amountSheet({ title: 'Change amount', label: refund ? 'Money back' : 'Amount', initial: Math.abs(e.amount), confirm: 'Save' }, (p) => { update({ amount: refund ? -p : p }, 'Amount changed.'); })),
+        row('Change bucket', l ? l.name : 'Other', () => pickBucket(e)),
+        dayRow,
+        row(e.note ? 'Edit note' : 'Add a note', e.note || null, () => noteSheet(e)),
+        !refund ? row('Got money back', null, () => amountSheet({ title: 'Got money back', label: 'How much came back?', initial: e.amount, hint: `It goes back into ${l ? l.name : 'Other'}.`, confirm: 'Add money back' }, (p) => {
+          commit(() => { S.entries.push({ id: E.uid(), date: today(), amount: -Math.min(p, e.amount), lineId: e.lineId, note: `${e.note || (l ? l.name : 'Other')} refund`.slice(0, 60), src: 'quick', ts: Date.now() }); }, `${money(Math.min(p, e.amount))} EGP back to ${l ? l.name : 'Other'}.`);
+        }), 'pos-row') : null,
+        h('button', { class: 'row danger-row', onclick: () => {
+          if (!confirmDelete) { confirmDelete = true; api.refresh(); return; }
+          api.close(); commit(() => { S.entries = S.entries.filter((x) => x.id !== e.id); }, 'Deleted.');
+        } }, h('div', { class: 'main' }, h('div', { class: 'name', text: confirmDelete ? 'Tap again to delete' : 'Delete' })))));
+  });
+}
+function pickBucket(e) {
+  openSheet('Change bucket', (body, api) => {
+    const key = E.planStarted(S, e.date) ? E.cycleKeyFor(S, e.date) : S.plan.startKey;
+    const ls = E.activeLines(S, key).filter((l) => l.kind === 'envelope' && (l.amount > 0 || l.id === 'other')).sort((a, b) => rankLine(a) - rankLine(b));
+    put(body, h('div', { class: 'grid6' }, ls.map((l) => h('button', { class: 'bk' + (l.id === e.lineId ? ' press' : ''), onclick: () => {
+      api.close();
+      commit(() => { const x = S.entries.find((y) => y.id === e.id); if (x) x.lineId = l.id; const mk = E.merchantKey(e.note); if (mk) S.merchants[mk] = l.id; }, `Moved to ${l.name}.`);
+    } }, h('span', { class: 'n', text: l.name }), h('span', { class: 'l', text: l.id === e.lineId ? 'current' : '' })))));
+  });
+}
+function noteSheet(e) {
+  openSheet(e.note ? 'Edit note' : 'Add a note', (body, api) => {
+    const inp = h('input', { type: 'text', value: e.note || '', maxlength: '60', placeholder: 'Where? e.g. Talabat', autocomplete: 'off', autocapitalize: 'words' });
+    const done = () => { api.close(); commit(() => { const x = S.entries.find((y) => y.id === e.id); if (x) x.note = inp.value.trim().slice(0, 60); }, 'Note saved.'); };
+    inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') done(); });
+    put(body, h('div', { class: 'field' }, inp), h('button', { class: 'btn ink wide', style: { marginTop: '14px' }, text: 'Save note', onclick: done }));
+    setTimeout(() => inp.focus(), 250);
+  });
 }
 
 /* ---------------- small reusable sheets ---------------- */
@@ -1030,7 +1091,7 @@ function removeLogItem(i) {
   }, i.kind === 'spend' ? 'Deleted.' : 'Payment removed.');
 }
 function openLogItem(i) {
-  if (i.kind === 'spend') return openAdd(i.ref);
+  if (i.kind === 'spend') return openEntry(i.ref);
   const text = i.kind === 'bill' ? `This marks ${i.title} as not paid for that cycle.` : i.kind === 'debt' ? 'This removes the payment. Your debt balance goes back up by the same amount.' : 'This removes the savings entry.';
   confirmSheet(`${i.title} · ${money(Math.abs(i.amount))} EGP`, `${E.longDate(i.date)}. ${text}`, 'Undo this payment', () => removeLogItem(i), { danger: true });
 }

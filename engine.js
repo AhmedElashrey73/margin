@@ -446,6 +446,45 @@ export function guessLine(state, note) {
   return null;
 }
 
+/* ---------------- usuals & note suggestions ----------------
+   A "usual" is the same place + bucket + amount logged at least twice in the last 60 days
+   (three times when there's no note). Things usually logged around this hour rank higher. */
+export function usuals(state, today, hour, max = 4) {
+  const since = addDays(today, -60);
+  const groups = new Map();
+  for (const e of state.entries) {
+    if (e.amount <= 0 || e.date < since || e.date > today) continue;
+    const l = lineById(state, e.lineId);
+    if (!l || l.kind !== 'envelope' || !isActive(l, planStarted(state, today) ? cycleKeyFor(state, today) : state.plan.startKey)) continue;
+    const k = `${merchantKey(e.note)}|${e.lineId}|${e.amount}`;
+    const g = groups.get(k) || { note: '', lineId: e.lineId, amount: e.amount, count: 0, score: 0, last: '' };
+    g.count++;
+    const hr = new Date(e.ts).getHours();
+    g.score += 1 + (Math.abs(hr - hour) <= 2 ? 1 : 0);
+    if (e.date >= g.last) g.last = e.date;
+    const n = (e.note || '').trim();
+    if (n && (!g.note || (/^[a-z]/.test(g.note) && !/^[a-z]/.test(n)))) g.note = n; // prefer a capitalised spelling
+    groups.set(k, g);
+  }
+  return [...groups.values()]
+    .filter((g) => g.count >= (g.note ? 2 : 3))
+    .sort((a, b) => b.score - a.score || (a.last < b.last ? 1 : a.last > b.last ? -1 : 0))
+    .slice(0, max);
+}
+// Recent distinct notes, newest first; optionally only for one bucket.
+export function recentNotes(state, lineId = null, max = 3) {
+  const seen = new Set(), out = [];
+  const list = [...state.entries].sort((a, b) => (a.date !== b.date ? (a.date < b.date ? 1 : -1) : b.ts - a.ts));
+  for (const e of list) {
+    if (!e.note || (lineId && e.lineId !== lineId)) continue;
+    const k = merchantKey(e.note);
+    if (!k || seen.has(k)) continue;
+    seen.add(k); out.push(e.note.trim());
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
 /* ---------------- bank SMS parsing ----------------
    Reads amount, merchant and direction from a pasted bank / wallet message.
    Never auto-saves: the result is shown for confirmation. */
