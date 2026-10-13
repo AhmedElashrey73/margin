@@ -2,7 +2,7 @@ import * as E from './engine.js';
 
 const KEY = 'margin.state';
 const PREV = 'margin.prev';
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 let S = null;               // app state
 let bootError = null;       // { kind, raw }
@@ -83,12 +83,19 @@ let pendingToast = null;
 function toastLater(msg) { pendingToast = msg; }
 
 // Every change goes through commit(): it saves, re-renders and offers Undo.
-function commit(mutate, message, { undo = true } = {}) {
+function commit(mutate, message, { undo = true, celebrate = false, react = null } = {}) {
   const before = JSON.stringify(S);
   mutate();
+  const queued = [];
+  if (S.plan && S.meta.reactions && (celebrate || react)) {
+    const prev = E.validateState(JSON.parse(before));
+    if (react) { const r = react(prev); if (r) queued.push(r); }
+    if (celebrate) for (const d of E.clearedDebts(prev, S)) { S.meta.fx.debts[d.id] = 1; queued.push({ kind: 'debt', debt: d }); }
+  }
   if (!save()) { S = E.validateState(JSON.parse(before)); render(); return; }
   const after = JSON.stringify(S);
   render();
+  queued.forEach(showReaction);
   if (message) toast(message, undo ? () => {
     if (JSON.stringify(S) !== after) { toast('Too late to undo that one.'); return; }
     S = E.validateState(JSON.parse(before)); save(); render(); toast('Undone.');
@@ -334,7 +341,9 @@ function actionCards(t, started) {
   if (hourNow() >= 18 && !hasToday) {
     out.push(card('', 'Evening check-in', 'Anything you spent today?', 'Cash counts too — takeout, coffee, a ride.', [
       h('button', { class: 'btn ink', text: 'Add spending', onclick: () => openAdd() }),
-      h('button', { class: 'btn line', text: 'Nothing today', onclick: () => commit(() => { S.checkins[t] = 'none'; }, 'Nice. Noted.') }),
+      h('button', { class: 'btn line', text: 'Nothing today', onclick: () => commit(() => { S.checkins[t] = 'none'; }, null, {
+        react: () => { if (!E.planStarted(S, t) || E.flexSpentOn(S, t) !== 0 || S.meta.fx.nospend[t]) return null; S.meta.fx.nospend[t] = 1; return { kind: 'nospend', when: 'today' }; },
+      }) }),
     ]));
   }
 
@@ -478,7 +487,7 @@ function payDebt(amount, from) {
   commit(() => {
     const leftover = recordDebtPayment(amount, from);
     if (leftover > 0) S.savingsLog.push({ id: E.uid(), amount: leftover, date: today(), src: from === 'cycle' ? 'cycle' : 'manual', note: 'Extra after debt', ts: Date.now() });
-  }, `${money(amount)} EGP paid toward debt.`);
+  }, `${money(amount)} EGP paid toward debt.`, { celebrate: true });
 }
 function payTask(task) {
   const sv = E.savingsBalance(S);
@@ -486,7 +495,7 @@ function payTask(task) {
     const leftover = task.debtId ? recordDebtPayment(task.amount, task.from, { taskId: task.id, debtId: task.debtId }) : task.amount;
     if (leftover > 0 && task.from === 'savings') S.savingsLog.push({ id: E.uid(), amount: -leftover, date: today(), src: 'manual', note: task.title, ts: Date.now() });
     const tt = S.plan.tasks.find((x) => x.id === task.id); if (tt) tt.done = true;
-  }, `${task.title} marked paid.`);
+  }, `${task.title} marked paid.`, { celebrate: true });
   if (task.from === 'savings' && sv < task.amount) {
     confirmSheet('Not enough in savings', `Your savings show ${money(sv)} EGP, less than ${money(task.amount)}. Mark it paid anyway? Savings will go below zero until you update them.`, 'Mark as paid', go);
   } else go();
@@ -501,7 +510,115 @@ function sweep(key, amount, toDebt) {
       if (leftover > 0) S.savingsLog.push({ id: E.uid(), amount: leftover, date: today(), src: 'sweep', note: 'Leftover from last cycle', ts: Date.now() });
     } else S.savingsLog.push({ id: E.uid(), amount, date: today(), src: 'sweep', note: 'Leftover from last cycle', ts: Date.now() });
     S.sweeps[key] = 'saved';
-  }, toDebt ? `${money(amount)} EGP put toward debt.` : `${money(amount)} EGP moved to savings.`);
+  }, toDebt ? `${money(amount)} EGP put toward debt.` : `${money(amount)} EGP moved to savings.`, { celebrate: true });
+}
+
+/* ================= PLAYFUL REACTIONS ================= */
+const reactQueue = [];
+let reactShowing = false;
+function reactionContent(r) {
+  if (r.kind === 'over') return { art: artWallet(), title: 'E5th.', sub: `Over today’s share. Tomorrow’s share: ${money(r.tomorrow)} EGP.`, ms: 2600 };
+  if (r.kind === 'bucket') return { art: artReceipt(), title: 'Yalahweeey', sub: `${r.line.name} is ${money(r.over)} over for this cycle. It comes out of your other flexible money.`, ms: 3000 };
+  if (r.kind === 'nospend') return { art: artCoin(), title: r.when === 'yesterday' ? 'Zero spend yesterday.' : 'Zero spend today.', sub: 'Your future self says thokran.', ms: 2800 };
+  if (r.kind === 'cycle') return { art: artStamp(), title: 'Bravooo Thara', sub: `Last pay cycle finished under budget${r.left > 0 ? `, with ${money(r.left)} EGP to spare` : ''}.`, ms: 3400 };
+  if (r.kind === 'debt') {
+    const card = r.debt.id === 'card' || /card/i.test(r.debt.name);
+    return { art: card ? artCardSnap() : artConfetti(), title: card ? 'Elhamdullah 2adar w lataf' : 'yaaaay', sub: `${r.debt.name} is fully paid.`, ms: 3600, party: true };
+  }
+  return null;
+}
+function showReaction(r) { reactQueue.push(r); if (!reactShowing) nextReaction(); }
+function nextReaction() {
+  const r = reactQueue.shift();
+  if (!r) { reactShowing = false; return; }
+  const c = reactionContent(r);
+  if (!c) return nextReaction();
+  reactShowing = true;
+  const root = document.getElementById('toast-root');
+  const el = h('div', { class: 'react' + (c.party ? ' party' : ''), role: 'status', 'aria-live': 'assertive' },
+    h('div', { class: 'react-card' }, h('div', { class: 'react-art', 'aria-hidden': 'true' }, c.art),
+      h('div', { class: 'react-title', text: c.title }), h('div', { class: 'react-sub num', text: c.sub })));
+  if (c.party) el.append(confettiLayer());
+  let done = false;
+  const close = () => { if (done) return; done = true; el.classList.add('out'); setTimeout(() => { el.remove(); nextReaction(); }, 220); };
+  el.addEventListener('click', close);
+  document.body.append(el);
+  setTimeout(close, c.ms);
+  void root;
+}
+const INK = '#1B1A17', GREEN = '#1E5A43', RED = '#A3452B', GOLD = '#B9A27A', PAPER = '#FAF8F3';
+function artWallet() {
+  return sv('svg', { viewBox: '0 0 120 120', class: 'a-wallet' },
+    sv('ellipse', { cx: 60, cy: 104, rx: 34, ry: 4, fill: '#E6E0D2', class: 'shadow' }),
+    sv('g', { class: 'body' },
+      sv('rect', { x: 22, y: 42, width: 76, height: 54, rx: 9, fill: PAPER, stroke: INK, 'stroke-width': 3 }),
+      sv('path', { d: 'M22 58 h76', stroke: INK, 'stroke-width': 3 }),
+      sv('rect', { x: 70, y: 62, width: 28, height: 18, rx: 5, fill: PAPER, stroke: INK, 'stroke-width': 3 }),
+      sv('circle', { cx: 80, cy: 71, r: 2.5, fill: INK }),
+      sv('path', { d: 'M40 74 q4 -4 8 0 M52 74 q4 -4 8 0', stroke: INK, 'stroke-width': 2.5, fill: 'none', 'stroke-linecap': 'round', class: 'eyes' }),
+      sv('path', { d: 'M45 86 q6 -4 12 0', stroke: INK, 'stroke-width': 2.5, fill: 'none', 'stroke-linecap': 'round' }),
+      sv('path', { d: 'M104 40 q6 2 4 10', stroke: '#7C766A', 'stroke-width': 2, fill: 'none', 'stroke-linecap': 'round', class: 'sweat' })));
+}
+function artReceipt() {
+  const lines = [];
+  for (let i = 0; i < 9; i++) lines.push(sv('path', { d: `M42 ${38 + i * 9} h${i % 3 === 2 ? 22 : 36}`, stroke: '#A9A293', 'stroke-width': 2.5, 'stroke-linecap': 'round' }));
+  return sv('svg', { viewBox: '0 0 120 130', class: 'a-receipt' },
+    sv('rect', { x: 24, y: 18, width: 72, height: 14, rx: 4, fill: INK }),
+    sv('g', { class: 'paper' },
+      sv('path', { d: 'M34 30 h52 v92 l-6.5 -5 l-6.5 5 l-6.5 -5 l-6.5 5 l-6.5 -5 l-6.5 5 l-6.5 -5 l-6.5 5 z', fill: PAPER, stroke: INK, 'stroke-width': 2.5, 'stroke-linejoin': 'round' }),
+      ...lines,
+      sv('path', { d: 'M42 116 h36', stroke: RED, 'stroke-width': 3, 'stroke-linecap': 'round' })));
+}
+function artCoin() {
+  return sv('svg', { viewBox: '0 0 120 120', class: 'a-coin' },
+    sv('ellipse', { cx: 60, cy: 106, rx: 24, ry: 3.5, fill: '#E6E0D2' }),
+    sv('g', { class: 'spin' },
+      sv('circle', { cx: 60, cy: 58, r: 36, fill: '#E9DFC6', stroke: INK, 'stroke-width': 3 }),
+      sv('circle', { cx: 60, cy: 58, r: 28, fill: 'none', stroke: GOLD, 'stroke-width': 2, 'stroke-dasharray': '3 4' }),
+      sv('text', { x: 60, y: 72, 'text-anchor': 'middle', 'font-family': 'M Serif, Georgia, serif', 'font-size': 40, 'font-weight': 500, fill: INK }, document.createTextNode('0'))));
+}
+function artStamp() {
+  const t = sv('text', { x: 60, y: 66, 'text-anchor': 'middle', 'font-family': 'M Sans, Arial, sans-serif', 'font-size': 10.5, 'font-weight': 600, 'letter-spacing': 1, fill: GREEN });
+  t.textContent = 'UNDER BUDGET';
+  return sv('svg', { viewBox: '0 0 120 120', class: 'a-stamp' },
+    sv('g', { class: 'ink' },
+      sv('circle', { cx: 60, cy: 60, r: 44, fill: 'none', stroke: GREEN, 'stroke-width': 4 }),
+      sv('circle', { cx: 60, cy: 60, r: 37, fill: 'none', stroke: GREEN, 'stroke-width': 1.5 }),
+      sv('path', { d: 'M30 52 h60 M30 74 h60', stroke: GREEN, 'stroke-width': 1.5 }), t));
+}
+function artCardSnap() {
+  const half = (cls, x) => sv('g', { class: cls },
+    sv('rect', { x, y: 34, width: 40, height: 52, rx: 6, fill: '#2D2B26' }),
+    cls === 'l' ? sv('rect', { x: x + 10, y: 46, width: 14, height: 10, rx: 2, fill: GOLD }) : sv('path', { d: `M${x + 8} 74 h22`, stroke: '#7C766A', 'stroke-width': 3, 'stroke-linecap': 'round' }));
+  return sv('svg', { viewBox: '0 0 120 120', class: 'a-card' },
+    half('l', 20), half('r', 60),
+    sv('path', { d: 'M60 26 l-4 10 l7 8 l-6 9 l7 9 l-6 9 l7 9 l-5 10', stroke: RED, 'stroke-width': 2.5, fill: 'none', class: 'crack' }));
+}
+function artConfetti() {
+  return sv('svg', { viewBox: '0 0 120 120', class: 'a-pop' },
+    sv('path', { d: 'M38 98 L60 40 L82 98 Z', fill: GOLD, stroke: INK, 'stroke-width': 3, 'stroke-linejoin': 'round' }),
+    sv('path', { d: 'M46 78 h28 M52 62 h16', stroke: INK, 'stroke-width': 2.5 }),
+    sv('path', { d: 'M60 30 v-12 M44 34 l-8 -9 M76 34 l8 -9', stroke: GREEN, 'stroke-width': 3, 'stroke-linecap': 'round', class: 'burst' }));
+}
+function confettiLayer() {
+  const layer = h('div', { class: 'confetti', 'aria-hidden': 'true' });
+  const cols = [GREEN, GOLD, INK, RED, '#2F7458'];
+  for (let i = 0; i < 34; i++) {
+    const p = h('i');
+    Object.assign(p.style, { left: `${(i * 37) % 100}%`, background: cols[i % cols.length], animationDelay: `${(i % 9) * 0.07}s`, animationDuration: `${1.9 + (i % 5) * 0.25}s`, width: `${5 + (i % 3) * 2}px`, height: `${9 + (i % 4) * 2}px`, transform: `rotate(${(i * 47) % 180}deg)` });
+    layer.append(p);
+  }
+  return layer;
+}
+// Run when the app opens or the day changes: no-spend yesterday, cycle under budget.
+function checkOpenReactions() {
+  if (!S || !S.plan || bootError || ui.setupStep) return;
+  const t = today();
+  const fx = S.meta.fx;
+  const list = S.meta.reactions ? E.openReactions(S, t) : [];
+  for (const r of list) { if (r.kind === 'cycle') fx.cycles[r.key] = 1; if (r.kind === 'nospend') fx.nospend[r.date] = 1; }
+  if (fx.lastSeen !== t || list.length) { fx.lastSeen = t; save(); }
+  list.forEach(showReaction);
 }
 
 /* ================= ADD / EDIT SPENDING ================= */
@@ -609,7 +726,15 @@ function openAdd(existing = null, preset = {}) {
         else S.entries.push(entry);
         const mk = E.merchantKey(entry.note);
         if (mk) S.merchants[mk] = entry.lineId;
-      }, existing ? 'Changes saved.' : `${money(p)} EGP ${st.refund ? 'back to' : 'to'} ${line ? E.lcName(line.name) : 'other'}.`);
+      }, existing ? 'Changes saved.' : `${money(p)} EGP ${st.refund ? 'back to' : 'to'} ${line ? E.lcName(line.name) : 'other'}.`, {
+        react: existing ? null : (prev) => {
+          const r = E.spendReaction(prev, S, entry, today());
+          if (!r) return null;
+          if (r.kind === 'bucket') S.meta.fx.buckets[r.key] = 1;
+          S.meta.fx.overDay = today(); // one reaction per day for overspending
+          return r;
+        },
+      });
     });
 
     put(body, 
@@ -982,6 +1107,7 @@ function openMenu() {
       item('Back up', S.meta.lastBackup ? `Last backup ${E.shortDate(E.todayISO(new Date(S.meta.lastBackup)))}` : 'Save a copy to Files', exportBackup),
       item('Restore from a backup', 'Replace what’s on this phone', importBackup),
       item('Evening reminder', 'A nudge at 9pm to log the day', openReminderHelp),
+      item('Playful reactions', S.meta.reactions ? 'On — tap to turn off' : 'Off — tap to turn on', () => commit(() => { S.meta.reactions = !S.meta.reactions; }, S.meta.reactions ? 'Reactions off.' : 'Reactions on. Yalla.', { undo: false })),
     );
     if (!isStandalone()) list.append(item('Add to Home Screen', 'Use Margin like an app', openInstallHelp));
     const snap = readSnapshot();
@@ -1348,7 +1474,7 @@ function cancelSetup() { setupToken = null; ui.setupStep = null; ui.setupData = 
 function acceptSetup() {
   const { plan, id } = ui.setupData;
   const before = JSON.stringify(S);
-  S.plan = plan; S.meta.setupId = id || null;
+  S.plan = plan; S.meta.setupId = id || null; S.meta.fx.lastSeen = today();
   if (!save()) { S = E.validateState(JSON.parse(before)); return; }
   try { localStorage.setItem('margin.lastToken', setupToken); } catch { /* ignore */ }
   setupToken = null; ui.setupStep = null; ui.setupData = null; ui.tab = 'today';
@@ -1391,8 +1517,9 @@ function boot() {
   load();
   if (!bootError) readHash();
   render();
+  setTimeout(checkOpenReactions, 600);
   window.addEventListener('hashchange', () => { readHash(); render(); });
-  const tick = () => { if (today() !== lastToday && !currentSheet) render(); };
+  const tick = () => { if (today() !== lastToday && !currentSheet) { render(); checkOpenReactions(); } };
   setInterval(tick, 30000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { reloadFromStorage(); tick(); } });
   window.addEventListener('storage', (e) => { if (e.key === KEY) reloadFromStorage(true); });

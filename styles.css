@@ -305,3 +305,36 @@ h2.sec .r.neg { color: var(--red); }
 .tickrow .box { width: 22px; height: 22px; border-radius: 6px; border: 1.5px solid var(--ink-2); flex-shrink: 0; position: relative; }
 .tickrow.on .box { background: var(--green); border-color: var(--green); }
 .tickrow.on .box::after { content: ""; position: absolute; left: 6.5px; top: 2.5px; width: 5px; height: 10px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+
+/* ---------- playful reactions ---------- */
+.react { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 24px;
+  background: rgba(244, 241, 233, .82); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  animation: fade .2s ease-out; cursor: pointer; }
+.react.out { opacity: 0; transition: opacity .2s; }
+.react-card { position: relative; z-index: 2; text-align: center; max-width: 320px; animation: pop .42s cubic-bezier(.2,1.4,.4,1); }
+@keyframes pop { from { transform: scale(.85); opacity: 0; } }
+.react-art svg { width: 132px; height: 132px; overflow: visible; }
+.react-title { font-family: var(--serif); font-weight: 500; font-size: 44px; line-height: 1.05; letter-spacing: -.02em; margin-top: 10px; }
+.react-sub { color: var(--ink-2); font-size: 15px; margin-top: 10px; }
+.a-wallet .body { transform-origin: 60px 96px; animation: sit 1.2s ease-in-out .15s both; }
+@keyframes sit { 0% { transform: none; } 30% { transform: translateY(10px) scaleY(.82) scaleX(1.08); } 50% { transform: translateY(6px) scaleY(.9) rotate(-4deg); } 70% { transform: translateY(7px) scaleY(.88) rotate(3deg); } 100% { transform: translateY(7px) scaleY(.88); } }
+.a-wallet .sweat { animation: drip 1.2s ease-in .6s both; }
+@keyframes drip { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.a-receipt .paper { transform-origin: 60px 30px; animation: unroll 1.6s cubic-bezier(.3,.7,.3,1) both, shiver .25s ease-in-out 1.5s 4; }
+@keyframes unroll { from { transform: scaleY(.08); } to { transform: none; } }
+@keyframes shiver { 50% { transform: translateX(2px); } }
+.a-coin .spin { transform-origin: 60px 58px; animation: flip 1.4s cubic-bezier(.3,.6,.3,1) both; }
+@keyframes flip { 0% { transform: scaleX(1); } 15% { transform: scaleX(.05); } 30% { transform: scaleX(1); } 45% { transform: scaleX(.05); } 60% { transform: scaleX(1); } 75% { transform: translateY(-8px); } 100% { transform: none; } }
+.a-stamp .ink { transform-origin: 60px 60px; animation: stamp .55s cubic-bezier(.5,0,.6,1.6) .1s both; }
+@keyframes stamp { 0% { transform: scale(2.2) rotate(-18deg); opacity: 0; } 70% { transform: scale(.94) rotate(-9deg); opacity: 1; } 100% { transform: scale(1) rotate(-9deg); } }
+.a-card .l { animation: snapL .7s cubic-bezier(.3,1.4,.5,1) .35s both; transform-origin: 40px 86px; }
+.a-card .r { animation: snapR .7s cubic-bezier(.3,1.4,.5,1) .35s both; transform-origin: 80px 86px; }
+.a-card .crack { animation: crack .35s ease-out both; stroke-dasharray: 90; }
+@keyframes snapL { to { transform: translate(-10px, 6px) rotate(-14deg); } }
+@keyframes snapR { to { transform: translate(10px, 6px) rotate(14deg); } }
+@keyframes crack { from { stroke-dashoffset: 90; } to { stroke-dashoffset: 0; opacity: 0; } }
+.a-pop .burst { animation: burst .6s ease-out .1s both; transform-origin: 60px 34px; }
+@keyframes burst { from { transform: scale(.2); opacity: 0; } 60% { transform: scale(1.15); opacity: 1; } to { transform: scale(1); } }
+.confetti { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 1; }
+.confetti i { position: absolute; top: -20px; border-radius: 1.5px; animation-name: fall; animation-timing-function: cubic-bezier(.3,.4,.6,1); animation-fill-mode: both; }
+@keyframes fall { to { top: 105%; transform: translateX(30px) rotate(540deg); } }

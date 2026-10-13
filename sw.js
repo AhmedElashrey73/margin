@@ -1,6 +1,6 @@
 // Margin service worker: makes the app open instantly and work offline.
 // It only caches the app's own files. Your data never passes through here.
-const VERSION = 'margin-v1.1.0';
+const VERSION = 'margin-v1.2.0';
 const FILES = [
   './', 'index.html', 'styles.css', 'app.js', 'engine.js', 'manifest.webmanifest',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',

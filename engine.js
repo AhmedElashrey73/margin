@@ -359,6 +359,53 @@ export function project(state, today, maxCycles = 60) {
 // "Car installment" -> "car installment", but keep acronyms like "ROSCA".
 export function lcName(n) { const w = n.split(' ')[0]; return w.length > 1 && w === w.toUpperCase() ? n : n.charAt(0).toLowerCase() + n.slice(1); }
 
+/* ---------------- reactions: pure trigger checks ---------------- */
+// Flexible spending (incl. "Other") on one day.
+export function flexSpentOn(state, iso) {
+  return state.entries.filter((e) => e.date === iso && isLifestyleEntry(state, e)).reduce((a, e) => a + e.amount, 0);
+}
+// Which reaction a just-saved spend should cause, comparing state before and after. At most one.
+export function spendReaction(before, after, entry, today) {
+  if (!entry || entry.date !== today || entry.amount <= 0) return null;
+  if (!planStarted(after, today)) return null;
+  const line = lineById(after, entry.lineId);
+  if (!line || line.group !== 'lifestyle') return null;
+  const fx = after.meta.fx;
+  const key = cycleKeyFor(after, today);
+  if (line.id !== 'other' && line.amount > 0) {
+    const was = line.amount - lineSpent(before, line, key);
+    const now = line.amount - lineSpent(after, line, key);
+    if (was >= 0 && now < 0 && !fx.buckets[`${key}:${line.id}`]) return { kind: 'bucket', key: `${key}:${line.id}`, line, over: -now };
+  }
+  const b = safeToSpend(before, today), a = safeToSpend(after, today);
+  if (b.leftToday >= 0 && a.leftToday < 0 && fx.overDay !== today) return { kind: 'over', tomorrow: safeToSpend(after, addDays(today, 1)).daily };
+  return null;
+}
+// Debts that went from owing to cleared between two states.
+export function clearedDebts(before, after) {
+  return after.plan.debts.filter((d) => {
+    const b = before.plan.debts.find((x) => x.id === d.id);
+    return b && debtBalance(before, b) > 0 && debtBalance(after, d) === 0 && !after.meta.fx.debts[d.id];
+  });
+}
+// Reactions due when the app opens (or the day rolls over), in display order.
+export function openReactions(state, today) {
+  const out = [];
+  if (!state.plan || !planStarted(state, today)) return out;
+  const fx = state.meta.fx;
+  const c = cycleInfo(state, today);
+  const pk = prevKey(c.key);
+  if (pk >= state.plan.startKey && c.dayIndex <= 10 && !fx.cycles[pk]) {
+    const ps = cycleStart(state, pk), pe = cycleEnd(state, pk);
+    const flexEntries = entriesBetween(state, ps, pe).filter((e) => isLifestyleEntry(state, e));
+    const left = budgetFor(state, pk).lifestyle - flexEntries.reduce((a, e) => a + e.amount, 0) - fixedOverage(state, pk, pe);
+    if (flexEntries.length >= 3 && left >= 0) out.push({ kind: 'cycle', key: pk, left });
+  }
+  const y = addDays(today, -1);
+  if (fx.lastSeen === y && planStarted(state, y) && !fx.nospend[y] && flexSpentOn(state, y) === 0) out.push({ kind: 'nospend', date: y, when: 'yesterday' });
+  return out;
+}
+
 /* ---------------- streak ---------------- */
 export function streak(state, today) {
   const days = new Set(state.entries.map((e) => e.date));
@@ -443,7 +490,7 @@ export function emptyState() {
     plan: null,
     entries: [], bills: {}, debtPays: [], savingsLog: [],
     checkins: {}, merchants: {}, cycleStarts: {}, warmup: null, sweeps: {},
-    meta: { created: Date.now(), lastBackup: null, setupId: null },
+    meta: { created: Date.now(), lastBackup: null, setupId: null, reactions: true, fx: { overDay: null, lastSeen: null, buckets: {}, nospend: {}, debts: {}, cycles: {} } },
   };
 }
 
@@ -539,7 +586,20 @@ export function validateState(s) {
   out.sweeps = {};
   if (s.sweeps && typeof s.sweeps === 'object') for (const [k, v] of Object.entries(s.sweeps)) if (isValidKey(k)) out.sweeps[k] = v === 'saved' ? 'saved' : 'dismissed';
   const m = s.meta || {};
-  out.meta = { created: int(m.created) ?? Date.now(), lastBackup: int(m.lastBackup) ?? null, setupId: str(m.setupId, 40) || null };
+  const fx = m.fx && typeof m.fx === 'object' ? m.fx : {};
+  const flags = (o, ok, max) => { const r = {}; if (o && typeof o === 'object') for (const k of Object.keys(o).slice(-max)) if (ok(k)) r[k] = 1; return r; };
+  out.meta = {
+    created: int(m.created) ?? Date.now(), lastBackup: int(m.lastBackup) ?? null, setupId: str(m.setupId, 40) || null,
+    reactions: m.reactions !== false,
+    fx: {
+      overDay: isValidISO(fx.overDay) ? fx.overDay : null,
+      lastSeen: isValidISO(fx.lastSeen) ? fx.lastSeen : null,
+      buckets: flags(fx.buckets, (k) => /^\d{4}-\d{2}:[\w-]{1,24}$/.test(k), 400),
+      nospend: flags(fx.nospend, isValidISO, 400),
+      debts: flags(fx.debts, (k) => /^[\w-]{1,24}$/.test(k), 40),
+      cycles: flags(fx.cycles, isValidKey, 120),
+    },
+  };
   return out;
 }
 
