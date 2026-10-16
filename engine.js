@@ -498,12 +498,17 @@ export function parseSMS(raw) {
   const text = normaliseDigits(raw).replace(/ /g, ' ').slice(0, 2000);
   const candidates = [];
   const reCurFirst = new RegExp(CUR + '\\s*' + NUM, 'gi');
-  const reNumFirst = new RegExp(NUM + '\\s*' + CUR, 'gi');
+  // A number glued to a card/account mask (074-105***-001 EGP) is not an amount.
+  const reNumFirst = new RegExp('(?<![\\w*#/.,\\-])' + NUM + '\\s*' + CUR, 'gi');
+  const curFirstAt = new Set(); // where "EGP 65.00"-style matches begin
   for (const re of [reCurFirst, reNumFirst]) {
     let m;
     while ((m = re.exec(text))) {
       const val = parseAmount(m[1]);
       if (val == null || val <= 0) continue;
+      if (re === reCurFirst) curFirstAt.add(m.index);
+      // "4417 EGP 80": the currency belongs to the number after it
+      else if (curFirstAt.has(m.index + m[0].length - (/\S+$/.exec(m[0])[0].length))) continue;
       const before = text.slice(Math.max(0, m.index - 28), m.index);
       candidates.push({ val, idx: m.index, isBalance: BAL_WORDS.test(before) });
     }
@@ -518,10 +523,15 @@ export function parseSMS(raw) {
   const amount = usable[0].val;
   const isCredit = CREDIT_WORDS.test(text) && !/(debited|purchase|خصم|شراء)/i.test(text);
   let merchant = '';
+  // Sender header ("From HSBC:", "CIB:") is the bank, not the shop.
+  const body = text.replace(/^\s*(?:from\s+)?[A-Za-z][A-Za-z0-9 &.\-]{1,24}:\s*/i, '');
+  // HSBC style: "15OCT26 SHOP NAME Purchase from ..."
+  const hs = /\b\d{1,2}[A-Za-z]{3}\d{2,4}\s+([A-Za-z\u0600-\u06FF][^\n]{1,40}?)\s+(?:purchase|payment|withdrawal|transaction|refund)\b/i.exec(body);
+  if (hs) merchant = hs[1].trim().replace(/\s+/g, ' ');
   const stop = '(?:on|at|ref|dated|using|via|with|ending|for|by|card|avail|balance|bal|the|بتاريخ|يوم|في|رقم|بطاقة)';
   const reM = new RegExp('(?:\\bat\\b|\\bfrom\\b|\\bto\\b|\\bmerchant\\b|(?:^|\\s)(?:لدى|لدي|عند|من|إلى|الى)(?=\\s))\\s*:?\\s*([A-Za-z\\u0600-\\u06FF][A-Za-z0-9\\u0600-\\u06FF&\'.\\- ]{1,40}?)(?=\\s+' + stop + '(?=\\s|$|[.,:])|[.,;:\\n]|\\s+\\d|$)', 'gi');
   let mm;
-  while ((mm = reM.exec(text))) {
+  while (!merchant && (mm = reM.exec(body))) {
     const cand = mm[1].trim().replace(/\s+/g, ' ');
     if (/^(your|the|card|account|acc|a\/c|حساب|بطاق|المنتهية)/i.test(cand)) continue;
     merchant = cand; break;
